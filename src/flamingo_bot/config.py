@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     flamingo_chat_concurrency: int = Field(default=8, ge=1, le=100)
     flamingo_rate_limit_requests: int = Field(default=20, ge=1, le=10_000)
     flamingo_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    #: Durable per-visitor allowance, shared across every serving instance.
+    flamingo_client_quota_requests: int = Field(default=10, ge=1, le=10_000)
+    flamingo_client_quota_window_seconds: int = Field(default=3_600, ge=60, le=604_800)
+    #: Durable service-wide budget. This is the ceiling on what a day can cost.
+    flamingo_daily_quota_requests: int = Field(default=100, ge=1, le=1_000_000)
+    flamingo_daily_quota_window_seconds: int = Field(default=86_400, ge=60, le=604_800)
+    #: Trailing ``X-Forwarded-For`` entries appended by trusted infrastructure that
+    #: are not the caller. Cloud Run reached directly on its ``run.app`` URL appends
+    #: only the client address, so nothing trails it and the default is zero. Behind
+    #: an external HTTPS load balancer the balancer adds its own hop; set this to 1.
+    flamingo_trusted_proxy_hops: int = Field(default=0, ge=0, le=4)
     flamingo_safety_salt: SecretStr | None = None
 
     model_config_path: Path = PROJECT_ROOT / "openai.yaml"

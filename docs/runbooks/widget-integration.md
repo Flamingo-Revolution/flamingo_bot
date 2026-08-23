@@ -32,6 +32,14 @@ The backend applies both CORS and a server-side origin guard, but that is not an
 authentication mechanism; public-endpoint rate and concurrency limits still
 apply.
 
+Visitors share a metered service. Each one may ask 10 questions an hour, and the
+service answers at most 100 questions a day in total, so an embedded widget can
+refuse for a reason that has nothing to do with the visitor in front of it. The
+widget distinguishes the cases already: a visitor who is out for the hour is told
+to come back later, and one refused by the daily budget is told to come back
+tomorrow rather than to retry. Operators tune both numbers from repository
+variables; see `docs/runbooks/gcp-deployment.md`.
+
 If the host uses Content Security Policy, allow `BOT_HOST` in `script-src`,
 `connect-src`, and `media-src`. The host may need to add the module script's
 origin to `default-src` as well when it does not declare those directives

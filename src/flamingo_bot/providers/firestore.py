@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,9 +30,11 @@ from flamingo_bot.models import (
     RetrievedChunk,
     RollbackReport,
 )
+from flamingo_bot.quota import ALLOWED, QuotaDecision, QuotaWindow
 
 GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+QUOTA_COLLECTION = "request_quotas"
 
 
 def validate_generation_id(generation_id: str) -> str:
@@ -74,8 +77,7 @@ def firestore_credentials(settings: Settings) -> Credentials | None:
         source_credentials, _ = google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
     except DefaultCredentialsError as exc:
         raise ConfigurationError(
-            "Google Application Default Credentials are required for service-account "
-            "impersonation"
+            "Google Application Default Credentials are required for service-account impersonation"
         ) from exc
     return impersonated_credentials.Credentials(  # type: ignore[no-untyped-call]
         source_credentials=source_credentials,
@@ -84,6 +86,116 @@ def firestore_credentials(settings: Settings) -> Credentials | None:
         lifetime=3600,
         quota_project_id=settings.gcp_project_id,
     )
+
+
+def _counter_value(snapshot: Any) -> int:
+    """Read a counter defensively; a malformed document must not grant free requests."""
+    if not snapshot.exists:
+        return 0
+    value = (snapshot.to_dict() or {}).get("count")
+    return value if isinstance(value, int) and value > 0 else 0
+
+
+class FirestoreRequestQuota:
+    """Request quotas held in Firestore so every Cloud Run instance shares one count.
+
+    Each fixed window is one document holding one counter, and both counters are
+    read and written inside a single transaction. That is what makes the pair
+    consistent: a request refused by the daily budget never draws down the
+    visitor's hourly allowance, and a visitor who is already out never draws down
+    the shared budget.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        client_window: QuotaWindow,
+        daily_window: QuotaWindow,
+        *,
+        client: firestore_v1.Client | None = None,
+        time_source: Callable[[], float] = time.time,
+    ) -> None:
+        self.settings = settings
+        self.client_window = client_window
+        self.daily_window = daily_window
+        self._time_source = time_source
+        if client is not None:
+            self.client = client
+        else:
+            try:
+                self.client = firestore_v1.Client(
+                    project=settings.gcp_project_id,
+                    database=settings.firestore_database_id,
+                    credentials=firestore_credentials(settings),
+                )
+            except DefaultCredentialsError as exc:
+                raise ConfigurationError(
+                    "Google Application Default Credentials are required for Firestore access"
+                ) from exc
+        self.collection = self.client.collection(QUOTA_COLLECTION)
+
+    @staticmethod
+    def _payload(count: int, bucket: int, window: QuotaWindow) -> dict[str, Any]:
+        window_start = bucket * window.window_seconds
+        return {
+            "count": count,
+            "limit": window.limit,
+            "window_seconds": window.window_seconds,
+            "window_start": datetime.fromtimestamp(window_start, UTC),
+            # One spare window of slack before a Firestore TTL policy on this field
+            # removes the document. Nothing reads a closed window.
+            "expires_at": datetime.fromtimestamp(window_start + window.window_seconds * 2, UTC),
+        }
+
+    def _consume_sync(self, client_key: str) -> QuotaDecision:
+        now = self._time_source()
+        client_bucket = self.client_window.bucket(now)
+        daily_bucket = self.daily_window.bucket(now)
+        client_ref = self.collection.document(
+            f"client-{client_key}-{self.client_window.window_seconds}-{client_bucket}"
+        )
+        daily_ref = self.collection.document(
+            f"daily-{self.daily_window.window_seconds}-{daily_bucket}"
+        )
+
+        @firestore_v1.transactional
+        def charge(transaction: firestore_v1.Transaction) -> QuotaDecision:
+            # Firestore requires every read in a transaction to precede its writes.
+            client_snapshot = client_ref.get(transaction=transaction)
+            daily_snapshot = daily_ref.get(transaction=transaction)
+            client_count = _counter_value(client_snapshot)
+            if client_count >= self.client_window.limit:
+                return QuotaDecision(
+                    allowed=False,
+                    scope="client",
+                    retry_after_seconds=self.client_window.seconds_until_reset(now),
+                )
+            daily_count = _counter_value(daily_snapshot)
+            if daily_count >= self.daily_window.limit:
+                return QuotaDecision(
+                    allowed=False,
+                    scope="daily",
+                    retry_after_seconds=self.daily_window.seconds_until_reset(now),
+                )
+            transaction.set(
+                client_ref, self._payload(client_count + 1, client_bucket, self.client_window)
+            )
+            transaction.set(
+                daily_ref, self._payload(daily_count + 1, daily_bucket, self.daily_window)
+            )
+            return ALLOWED
+
+        decision: QuotaDecision = charge(self.client.transaction())
+        return decision
+
+    async def consume(self, client_key: str) -> QuotaDecision:
+        try:
+            return await asyncio.to_thread(self._consume_sync, client_key)
+        except GoogleAPICallError as exc:
+            raise ProviderError("Firestore request quota check failed") from exc
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self.client.close)
 
 
 class FirestoreVectorStore:

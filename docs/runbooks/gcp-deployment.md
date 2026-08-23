@@ -93,9 +93,50 @@ regional or region-constrained resources:
   Artifact Registry writer binding, and runtime-account-scoped service-account
   user binding as documented in `infra/README.md`.
 - Billing budget alerts at conservative thresholds.
+- A Firestore TTL policy on `request_quotas.expires_at`, so spent quota windows
+  are removed rather than accumulating:
+
+  ```bash
+  gcloud firestore fields ttls update expires_at \
+    --collection-group=request_quotas --enable-ttl \
+    --project "$GCP_PROJECT_ID" --database "$FIRESTORE_DATABASE_ID"
+  ```
+
+  The policy is housekeeping only. Nothing reads a closed window, so quotas are
+  enforced correctly whether or not it exists.
 
 Never place a GCP JSON key in GitHub. Never grant the runtime identity ingestion
 or provisioning permissions.
+
+## 3a. Request quotas
+
+Two durable ceilings bound what the public endpoint can spend, both counted in
+Firestore so every Cloud Run instance shares one number:
+
+| Control | Default | Scope | Storage |
+| --- | --- | --- | --- |
+| Burst limiter | 20 per minute | One caller, one instance | In process |
+| Visitor quota | 10 per hour | One caller, whole service | `request_quotas` |
+| Daily budget | 100 per day | Whole service | `request_quotas` |
+
+Change any of them through the repository variables named in the deploy workflow;
+no code release is needed. Points worth knowing before tuning them:
+
+- Windows are fixed and aligned to the UTC hour and UTC midnight, so a visitor can
+  spend the end of one window and the start of the next in quick succession. The
+  burst limiter covers that spike and the daily budget still bounds the day.
+- A quota is charged before retrieval and before any model call, so a refused
+  request costs nothing. A request refused by the daily budget does not spend the
+  visitor's hourly allowance, and vice versa.
+- The service fails closed. If the quota counters cannot be read, `/v1/chat`
+  answers `503 quota_unavailable` rather than serving an unmetered request.
+  Retrieval depends on the same database, so this costs no availability the
+  request would otherwise have had.
+- Visitors are identified by the address Cloud Run appends to `X-Forwarded-For`,
+  selected by `FLAMINGO_TRUSTED_PROXY_HOPS`. That default of `0` is correct only
+  while traffic reaches Cloud Run directly. **Putting an external HTTPS load
+  balancer or Cloud Armor in front changes the header shape; set the variable to
+  `1` in the same change, or every visitor collapses into one bucket.**
 
 ## 4. First ingestion and local verification
 

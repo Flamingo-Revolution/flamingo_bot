@@ -12,6 +12,7 @@ from flamingo_bot.models import (
     GenerationManifest,
     RetrievedChunk,
 )
+from flamingo_bot.quota import QuotaDecision
 
 
 class Embedder(Protocol):
@@ -61,6 +62,12 @@ class PublicationStore(VectorStore, Protocol):
         manifest: GenerationManifest,
         chunks: Sequence[ChunkRecord],
     ) -> None: ...
+
+
+class RequestQuota(Protocol):
+    async def consume(self, client_key: str) -> QuotaDecision:
+        """Charge one request to the visitor allowance and the service-wide budget."""
+        ...
 
 
 class ClosableProvider(Protocol):

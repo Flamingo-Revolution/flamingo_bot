@@ -29,10 +29,12 @@ from flamingo_bot.ports import (
     ClosableProvider,
     Embedder,
     QueryCondenser,
+    RequestQuota,
     VectorStore,
 )
 from flamingo_bot.providers.azure import AzureModelProvider
-from flamingo_bot.providers.firestore import FirestoreVectorStore
+from flamingo_bot.providers.firestore import FirestoreRequestQuota, FirestoreVectorStore
+from flamingo_bot.quota import InMemoryRequestQuota, QuotaWindow
 from flamingo_bot.rate_limit import RateLimiter
 from flamingo_bot.retrieval import ChatService
 
@@ -52,6 +54,7 @@ class ServiceBundle:
     vector_store: VectorStore
     answer_generator: AnswerGenerator
     query_condenser: QueryCondenser | None = None
+    request_quota: RequestQuota | None = None
     closables: tuple[ClosableProvider, ...] = ()
 
 
@@ -92,30 +95,49 @@ def _sse(event: str, payload: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _client_key(request: Request) -> str:
+def _client_address(request: Request, trusted_proxy_hops: int) -> str:
+    """Resolve the caller's address from the trusted tail of ``X-Forwarded-For``.
+
+    Only the entries Google's front end appends can be trusted; anything a client
+    sends arrives as a prefix in front of them and is attacker-controlled. Counting
+    back from the end is therefore the only safe direction, and how far back
+    depends on the ingress in use, so ``trusted_proxy_hops`` names it explicitly
+    rather than guessing. Reached directly on its ``run.app`` URL, Cloud Run appends
+    exactly one entry, the caller, so the default of zero trailing proxy hops puts
+    the caller last.
+
+    A header shorter than the configured topology means the deployment does not
+    match its configuration. That falls back to the socket peer, which over-groups
+    callers rather than handing out a fresh bucket per forged header.
+    """
     forwarded = [
         item.strip()
         for item in request.headers.get("x-forwarded-for", "").split(",")
         if item.strip()
     ]
-    # Google appends the connecting client followed by its load-balancer proxy.
-    # Ignore any client-supplied prefix and the final proxy address.
-    if len(forwarded) >= 2:
-        host = forwarded[-2]
-    elif forwarded:
-        host = forwarded[0]
-    else:
-        host = request.client.host if request.client else "unknown"
-    return hashlib.sha256(host.encode()).hexdigest()
+    index = len(forwarded) - 1 - trusted_proxy_hops
+    if index >= 0:
+        return forwarded[index]
+    if forwarded:
+        logger.warning(
+            "forwarded_for_shorter_than_trusted_hops entries=%d hops=%d",
+            len(forwarded),
+            trusted_proxy_hops,
+        )
+    return request.client.host if request.client else "unknown"
 
 
-def _safety_identifier(request: Request, settings: Settings) -> str | None:
+def _client_key(request: Request, trusted_proxy_hops: int = 0) -> str:
+    return hashlib.sha256(_client_address(request, trusted_proxy_hops).encode()).hexdigest()
+
+
+def _safety_identifier(request: Request, settings: Settings, client_key: str) -> str | None:
     if settings.flamingo_safety_salt is None:
         return None
     salt = settings.flamingo_safety_salt.get_secret_value()
     if not salt:
         return None
-    return hashlib.sha256(f"{salt}:{_client_key(request)}".encode()).hexdigest()
+    return hashlib.sha256(f"{salt}:{client_key}".encode()).hexdigest()
 
 
 def create_app(
@@ -125,17 +147,35 @@ def create_app(
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
 
+    client_quota_window = QuotaWindow(
+        limit=runtime_settings.flamingo_client_quota_requests,
+        window_seconds=runtime_settings.flamingo_client_quota_window_seconds,
+    )
+    daily_quota_window = QuotaWindow(
+        limit=runtime_settings.flamingo_daily_quota_requests,
+        window_seconds=runtime_settings.flamingo_daily_quota_window_seconds,
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if services is None:
             model_config = load_model_config(runtime_settings.model_config_path)
             model_provider = AzureModelProvider(runtime_settings, model_config)
             vector_store = FirestoreVectorStore(runtime_settings)
+            # The quota shares the vector store's Firestore client so the durable
+            # counters cost one connection rather than a second one.
+            request_quota: RequestQuota = FirestoreRequestQuota(
+                runtime_settings,
+                client_quota_window,
+                daily_quota_window,
+                client=vector_store.client,
+            )
             bundle = ServiceBundle(
                 embedder=model_provider,
                 vector_store=vector_store,
                 answer_generator=model_provider,
                 query_condenser=model_provider,
+                request_quota=request_quota,
                 closables=(model_provider, vector_store),
             )
         else:
@@ -152,6 +192,12 @@ def create_app(
         app.state.rate_limiter = RateLimiter(
             runtime_settings.flamingo_rate_limit_requests,
             runtime_settings.flamingo_rate_limit_window_seconds,
+        )
+        # A bundle assembled by a caller that does not supply a quota gets a
+        # process-local one with the same limits, which is correct for a single
+        # test or development process and never used where instances scale out.
+        app.state.request_quota = bundle.request_quota or InMemoryRequestQuota(
+            client_quota_window, daily_quota_window
         )
         try:
             yield
@@ -227,9 +273,30 @@ def create_app(
     @application.post("/v1/chat")
     async def chat(payload: ChatRequest, request: Request) -> StreamingResponse:
         limiter: RateLimiter = request.app.state.rate_limiter
-        client_key = _client_key(request)
+        client_key = _client_key(request, runtime_settings.flamingo_trusted_proxy_hops)
+        # The in-process limiter is the cheap burst shield. It sheds a flood before
+        # it can cost a Firestore transaction, and the durable quotas behind it are
+        # what actually bound the day.
         if not await limiter.allow(client_key):
             raise HTTPException(status_code=429, detail="rate_limit_exceeded")
+
+        quota: RequestQuota = request.app.state.request_quota
+        try:
+            decision = await quota.consume(client_key)
+        except FlamingoBotError as exc:
+            # Fail closed. The quota exists to bound spend, so an unreadable
+            # counter must not become an unmetered request. Retrieval depends on
+            # the same Firestore database anyway, so this costs no availability
+            # the request had to begin with.
+            logger.warning("quota_unavailable error=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="quota_unavailable") from exc
+        if not decision.allowed:
+            logger.info("quota_exhausted scope=%s", decision.scope)
+            raise HTTPException(
+                status_code=429,
+                detail=f"{decision.scope}_quota_exhausted",
+                headers={"Retry-After": str(decision.retry_after_seconds)},
+            )
 
         semaphore: asyncio.Semaphore = request.app.state.chat_semaphore
         try:
@@ -248,7 +315,7 @@ def create_app(
                 citations, answer = await chat_service.stream(
                     payload.question.strip(),
                     history=payload.history,
-                    safety_identifier=_safety_identifier(request, runtime_settings),
+                    safety_identifier=_safety_identifier(request, runtime_settings, client_key),
                 )
                 citation_count = len(citations)
                 for citation in citations:

@@ -14,6 +14,7 @@
   import { afterUpdate, onDestroy, onMount, tick } from "svelte";
 
   import { buildHistory } from "./lib/history";
+  import { refusalBubble, refusalMessage, refusalReason } from "./lib/refusal";
   import { parseRichText, type InlineNode } from "./lib/richtext";
   import { consumeEventStream, type ServerEvent } from "./lib/sse";
 
@@ -161,7 +162,7 @@
         signal: abortController.signal,
       });
       if (!response.ok || !response.body) {
-        throw new Error(response.status === 429 ? "too_many_requests" : "request_failed");
+        throw new Error(await refusalReason(response));
       }
       await consumeEventStream(response.body, (event) => handleServerEvent(answerId, event));
       const answer = messages.find((message) => message.id === answerId);
@@ -177,15 +178,13 @@
         return;
       }
       updateMessage(userId, { failed: true });
+      const reason = error instanceof Error ? error.message : "request_failed";
       updateMessage(answerId, {
         pending: false,
         failed: true,
-        text: "I could not complete that request. Please try again in a moment.",
+        text: refusalBubble(reason),
       });
-      errorMessage =
-        error instanceof Error && error.message === "too_many_requests"
-          ? "The assistant is busy. Please wait before trying again."
-          : "The assistant is temporarily unavailable.";
+      errorMessage = refusalMessage(reason);
     } finally {
       submitting = false;
       abortController = null;
@@ -781,6 +780,8 @@
     margin: 8px 3px 0;
     color: #a00f3e;
     font-size: 12px;
+    /* The alert carries Albanian and English on their own lines. */
+    white-space: pre-line;
   }
 
   @media (max-width: 520px) {
