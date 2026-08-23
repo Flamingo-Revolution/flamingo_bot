@@ -45,11 +45,19 @@ def no_evidence_message(question: str) -> str:
     if any(character in question.lower() for character in "çë") or words & _ALBANIAN_MARKERS:
         return (
             "Nuk gjeta prova mjaftueshëm të rëndësishme në burimet e publikuara të "
-            "Flamingos për t'iu përgjigjur me besueshmëri kësaj pyetjeje."
+            "Flamingos për t'iu përgjigjur me besueshmëri kësaj pyetjeje.\n\n"
+            "Mund të të ndihmoj me Revolucionin Flamingo dhe protestat, me skandalet "
+            "e dokumentuara në Dosjen Flamingo, dhe me pjesëmarrjen qytetare e "
+            "diasporën te Diaspora Zbarkon. Provo një pyetje më të përcaktuar, për "
+            "shembull për një çështje, një protestë ose një person të caktuar."
         )
     return (
         "I could not find enough relevant evidence in the published Flamingo "
-        "sources to answer that question reliably."
+        "sources to answer that question reliably.\n\n"
+        "I can help with the Flamingo Revolution and its protests, the scandals "
+        "documented in the Flamingo Dossier, and civic participation and diaspora "
+        "mobilisation from Diaspora Zbarkon. Try a more specific question, for "
+        "example about a particular case, protest, or person."
     )
 
 
@@ -167,7 +175,7 @@ class ChatService:
         if not chunks:
 
             async def no_evidence() -> AsyncIterator[str]:
-                yield no_evidence_message(query)
+                yield no_evidence_message(question)
 
             return [], no_evidence()
         citations = citations_for(chunks)

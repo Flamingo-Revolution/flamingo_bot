@@ -3,6 +3,7 @@ import asyncio
 from flamingo_bot.config import Settings
 from flamingo_bot.errors import ProviderError
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
+from flamingo_bot.prompting import SYSTEM_INSTRUCTIONS
 from flamingo_bot.providers.memory import (
     HashEmbedder,
     InMemoryVectorStore,
@@ -99,6 +100,44 @@ def test_no_evidence_message_is_albanian_for_albanian_question() -> None:
     message = no_evidence_message("Çfarë është kjo çështje?")
 
     assert message.startswith("Nuk gjeta prova")
+
+
+def test_no_evidence_message_says_what_the_assistant_covers() -> None:
+    """A dead end must still point the visitor at the three published sources."""
+    english = no_evidence_message("What information can you provide me with?")
+    albanian = no_evidence_message("Çfarë informacioni mund të më japësh?")
+
+    for message, dossier, zbarkon in (
+        (english, "Flamingo Dossier", "Diaspora Zbarkon"),
+        (albanian, "Dosjen Flamingo", "Diaspora Zbarkon"),
+    ):
+        assert dossier in message
+        assert zbarkon in message
+        # The widget renders a blank line as a paragraph break.
+        assert "\n\n" in message
+
+
+def test_no_evidence_language_follows_the_visitor_not_the_condensed_query() -> None:
+    """The condensed query is a retrieval artefact and must not pick the language."""
+
+    async def scenario() -> None:
+        condenser = ScriptedCondenser("Explain the Flamingo Revolution in two sentences.")
+        generator = ScriptedAnswerGenerator("must not be used")
+        service = ChatService(
+            settings=Settings(_env_file=None),
+            embedder=HashEmbedder(),
+            vector_store=InMemoryVectorStore(),
+            answer_generator=generator,
+            query_condenser=condenser,
+        )
+
+        _, stream = await service.stream("Po skandalet e kësaj qeverie?", history=history_pair())
+        answer = "".join([piece async for piece in stream])
+
+        assert answer.startswith("Nuk gjeta prova")
+        assert generator.calls == []
+
+    asyncio.run(scenario())
 
 
 async def follow_up_service(
@@ -248,3 +287,14 @@ def test_retrieval_queries_each_source_and_returns_diversified_results() -> None
         }
 
     asyncio.run(scenario())
+
+
+def test_system_instructions_describe_the_assistant_scope() -> None:
+    """A visitor asking what the bot can do must be answerable from the prompt alone."""
+    for phrase in (
+        "Flamingo Dossier",
+        "Flamingo\nRevolution site",
+        "Diaspora Zbarkon",
+        "what you can help with",
+    ):
+        assert phrase in SYSTEM_INSTRUCTIONS
