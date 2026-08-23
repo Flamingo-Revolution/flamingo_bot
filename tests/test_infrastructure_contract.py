@@ -154,6 +154,8 @@ def test_deployment_uses_wif_and_smokes_candidate_before_traffic_promotion() -> 
     assert "--no-traffic" in candidate_run
     assert 'deploy_args+=(--no-traffic)' in candidate_run
     assert "bootstrap=true" in candidate_run
+    assert "--format=json" in candidate_run
+    assert "select(.tag == \"candidate\")" in candidate_run
     assert f"--tag {contract['cloud_run']['candidate_tag']}" in candidate_run
     assert "--allow-unauthenticated" in candidate_run
     assert "evals/smoke.yaml" in smoke_run

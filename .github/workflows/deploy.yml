@@ -119,7 +119,9 @@ jobs:
           candidate_url="$(gcloud run services describe "$SERVICE" \
             --project "$PROJECT_ID" \
             --region "$REGION" \
-            --format='value(status.traffic[?tag="candidate"].url)')"
+            --format=json \
+            | jq -r '.status.traffic[]? | select(.tag == "candidate") | .url' \
+            | head -n 1)"
           test -n "$revision"
           test -n "$candidate_url"
           echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
