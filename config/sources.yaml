@@ -1,0 +1,60 @@
+version: 1
+sources:
+  - id: flamingo-dossier
+    label: Flamingo Dossier
+    repository_setting: flamingo_dossier_repo
+    language: sq
+    base_url: https://flamingo-revolution.github.io/flamingo-dossier/
+    rules:
+      - parser: dossier_csv
+        include:
+          - data/dosje.csv
+        options:
+          relations_path: data/lidhje.csv
+
+  - id: flamingo-revolution
+    label: Flamingo Revolution
+    repository_setting: flamingo_revolution_repo
+    language: sq
+    base_url: https://www.flamingorevolution.eu/
+    rules:
+      - parser: text
+        include:
+          - public/llms.txt
+      - parser: markdown
+        include:
+          - src/content/**/*.md
+      - parser: typescript_strings
+        include:
+          - src/data/*.ts
+        exclude:
+          - src/data/navIcons.ts
+          - src/data/referendum.ts
+          - src/data/socialIcons.ts
+      - parser: pdf
+        include:
+          - public/documents/**/*.pdf
+          - public/referendum/**/*.pdf
+
+  - id: diaspora-zbarkon
+    label: Diaspora Zbarkon
+    repository_setting: diaspora_zbarkon_repo
+    language: sq
+    base_url: https://www.diaspora-zbarkon.com/
+    rules:
+      - parser: markdown
+        include:
+          - specs/Mission.md
+      - parser: typescript_strings
+        include:
+          - lib/content.ts
+          # Visitor-facing /pulsi copy, including the bilingual methodology note
+          # and the accuracy caveat shown under the chart.
+          - components/live-tracker-page.tsx
+        exclude:
+          - data/scandals.ts
+      # Structured series. The generic string extractor drops every figure and
+      # date here, so this file gets a parser that reads the structure.
+      - parser: participation_ts
+        include:
+          - data/participation.ts

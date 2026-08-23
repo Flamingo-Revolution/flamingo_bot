@@ -1,0 +1,9 @@
+title: Flamingo RAG Ingester
+description: Publish and roll back immutable Flamingo RAG generations without deletion access.
+stage: GA
+includedPermissions:
+  - datastore.databases.get
+  - datastore.entities.create
+  - datastore.entities.get
+  - datastore.entities.list
+  - datastore.entities.update

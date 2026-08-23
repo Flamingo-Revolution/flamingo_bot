@@ -1,0 +1,146 @@
+name: Deploy to Cloud Run
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: flamingo-bot-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: europe-west3
+  SERVICE: flamingo-bot
+  REPOSITORY: flamingo-containers
+  DATABASE: flamingo-rag
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+  ALLOWED_ORIGINS: ${{ vars.FLAMINGO_ALLOWED_ORIGINS }}
+  SMOKE_ORIGIN: https://www.flamingorevolution.eu
+
+jobs:
+  deploy:
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --dev
+      - run: uv run pytest
+      - run: uv run ruff check .
+      - run: uv run mypy src scripts
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run check && npm test && npm run build
+        working-directory: frontend
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Build and push immutable image
+        shell: bash
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          image="$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:${GITHUB_SHA}"
+          docker build --tag "$image" .
+          docker push "$image"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+
+      - id: candidate
+        name: Deploy zero-traffic candidate revision
+        shell: bash
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --image "$IMAGE" \
+            --service-account "$RUNTIME_SERVICE_ACCOUNT" \
+            --port 8080 \
+            --cpu 1 \
+            --memory 512Mi \
+            --concurrency 20 \
+            --min 0 \
+            --max 5 \
+            --timeout 90s \
+            --allow-unauthenticated \
+            --set-env-vars "^@^GCP_PROJECT_ID=$PROJECT_ID@FIRESTORE_DATABASE_ID=$DATABASE@FLAMINGO_ENVIRONMENT=production@FLAMINGO_ALLOWED_ORIGINS=$ALLOWED_ORIGINS" \
+            --set-secrets "AZURE_OPENAI_API_BASE=azure-openai-api-base:latest,AZURE_OPENAI_API_LLM_KEY=azure-openai-api-llm-key:latest,FLAMINGO_SAFETY_SALT=flamingo-safety-salt:latest" \
+            --no-traffic \
+            --tag candidate \
+            --quiet
+          revision="$(gcloud run services describe "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --format='value(status.latestReadyRevisionName)')"
+          candidate_url="$(gcloud run services describe "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --format='value(status.traffic[?tag="candidate"].url)')"
+          test -n "$revision"
+          test -n "$candidate_url"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "url=$candidate_url" >> "$GITHUB_OUTPUT"
+
+      - id: smoke
+        name: Smoke test zero-traffic candidate
+        continue-on-error: true
+        env:
+          CANDIDATE_URL: ${{ steps.candidate.outputs.url }}
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --retry 4 --retry-all-errors \
+            --max-time 20 "$CANDIDATE_URL/health"
+          curl --fail --silent --show-error --retry 4 --retry-all-errors \
+            --max-time 20 "$CANDIDATE_URL/status"
+          uv run python scripts/run_evals.py \
+            --api-base "$CANDIDATE_URL" \
+            --origin "$SMOKE_ORIGIN" \
+            --cases evals/smoke.yaml \
+            --timeout 90
+
+      - name: Promote validated candidate
+        if: steps.smoke.outcome == 'success'
+        env:
+          CANDIDATE_REVISION: ${{ steps.candidate.outputs.revision }}
+        shell: bash
+        run: |
+          gcloud run services update-traffic "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --to-revisions "$CANDIDATE_REVISION=100" \
+            --remove-tags candidate \
+            --quiet
+
+      - name: Remove failed candidate route
+        if: steps.smoke.outcome == 'failure'
+        continue-on-error: true
+        shell: bash
+        run: |
+          gcloud run services update-traffic "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --remove-tags candidate \
+            --quiet
+
+      - name: Fail deployment after rejected candidate
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1

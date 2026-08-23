@@ -1,0 +1,36 @@
+version: 1
+region: europe-west3
+
+firestore:
+  database_id: flamingo-rag
+  mode: firestore-native
+  delete_protection: true
+  collection_group: chunks
+  vector_field: embedding
+  source_filter_field: source_id
+  vector_dimensions: 1024
+  distance_measure: cosine
+
+cloud_run:
+  service: flamingo-bot
+  minimum_instances: 0
+  maximum_instances: 5
+  candidate_tag: candidate
+  public: true
+
+artifact_registry:
+  repository: flamingo-containers
+  format: docker
+
+secret_manager:
+  replication: user-managed
+  locations:
+    - europe-west3
+  secrets:
+    - azure-openai-api-base
+    - azure-openai-api-llm-key
+    - flamingo-safety-salt
+
+iam:
+  ingestion_role: flamingoRagIngester
+  deployer_role: flamingoCloudRunDeployer

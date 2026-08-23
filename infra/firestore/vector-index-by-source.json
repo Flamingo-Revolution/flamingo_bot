@@ -1,0 +1,13 @@
+[
+  {
+    "field-path": "source_id",
+    "order": "ascending"
+  },
+  {
+    "field-path": "embedding",
+    "vector-config": {
+      "dimension": 1024,
+      "flat": {}
+    }
+  }
+]

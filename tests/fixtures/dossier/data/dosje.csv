@@ -1,0 +1,3 @@
+id,titull,kategori,statusi,viti_fillimit,periudha,permbledhje,fraza_theksuar,pershkrim,kosto_eur,kosto_tekst,kosto_besueshmeria,burimet,eshte_pretendim_i_nxjerre,shenime_editoriale
+test-case,Test Dossier,public-finance,active-investigation,2025,2025–2026,A sourced summary,A highlighted claim,"A reported public-interest matter. The proceeding remains open and there is no final judgment.",1000000,About one million euro,estimate,"https://example.org/source-one
+https://example.org/source-two",TRUE,Active investigation; no final judgment.

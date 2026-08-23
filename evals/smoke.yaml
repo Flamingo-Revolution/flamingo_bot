@@ -1,0 +1,10 @@
+version: 1
+cases:
+  - id: deployed-rag-smoke
+    question: Çfarë është Revolucioni Flamingo dhe pse nisi?
+    min_citations: 1
+    expected_source_any:
+      - Flamingo Revolution
+    forbidden_answer_phrases:
+      - AZURE_OPENAI_API_LLM_KEY
+      - sk-

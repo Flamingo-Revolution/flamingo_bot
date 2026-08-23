@@ -1,0 +1,13 @@
+title: Flamingo Cloud Run Deployer
+description: Deploy and promote Flamingo Bot revisions without service or revision deletion access.
+stage: GA
+includedPermissions:
+  - run.operations.get
+  - run.revisions.get
+  - run.revisions.list
+  - run.services.create
+  - run.services.get
+  - run.services.getIamPolicy
+  - run.services.list
+  - run.services.setIamPolicy
+  - run.services.update

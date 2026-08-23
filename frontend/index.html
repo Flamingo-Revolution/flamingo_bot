@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>Flamingo Chat Widget</title>
+    <style>
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background: #f4efe9;
+        color: #211e1c;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+
+      main {
+        width: min(720px, calc(100% - 48px));
+        margin: 10vh auto;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Local host-page preview. Open the assistant from the lower corner.</p>
+    </main>
+    <flamingo-chat api-base="http://localhost:8000" asset-base="/media/"></flamingo-chat>
+    <script type="module" src="/src/main.ts"></script>
+    <script type="module">
+      if (new URLSearchParams(window.location.search).has("open")) {
+        await customElements.whenDefined("flamingo-chat");
+        const widget = document.querySelector("flamingo-chat");
+        requestAnimationFrame(() => widget?.shadowRoot?.querySelector("button")?.click());
+      }
+    </script>
+  </body>
+</html>
