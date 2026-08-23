@@ -104,6 +104,14 @@ class FirestoreRequestQuota:
     consistent: a request refused by the daily budget never draws down the
     visitor's hourly allowance, and a visitor who is already out never draws down
     the shared budget.
+
+    The counters live in their own database, named by
+    ``flamingo_quota_database_id``, and not beside the knowledge corpus. Firestore
+    IAM grants write access per database and cannot narrow it to one collection,
+    so sharing a database would mean the serving identity could also rewrite
+    published generations and the active-generation pointer. A separate database
+    keeps that identity's access to the corpus read-only, which is the whole point
+    of running ingestion under a different principal.
     """
 
     def __init__(
@@ -125,7 +133,7 @@ class FirestoreRequestQuota:
             try:
                 self.client = firestore_v1.Client(
                     project=settings.gcp_project_id,
-                    database=settings.firestore_database_id,
+                    database=settings.flamingo_quota_database_id,
                     credentials=firestore_credentials(settings),
                 )
             except DefaultCredentialsError as exc:

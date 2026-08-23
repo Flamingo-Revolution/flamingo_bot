@@ -93,22 +93,58 @@ regional or region-constrained resources:
   Artifact Registry writer binding, and runtime-account-scoped service-account
   user binding as documented in `infra/README.md`.
 - Billing budget alerts at conservative thresholds.
-- A Firestore TTL policy on `request_quotas.expires_at`, so spent quota windows
-  are removed rather than accumulating:
-
-  ```bash
-  gcloud firestore fields ttls update expires_at \
-    --collection-group=request_quotas --enable-ttl \
-    --project "$GCP_PROJECT_ID" --database "$FIRESTORE_DATABASE_ID"
-  ```
-
-  The policy is housekeeping only. Nothing reads a closed window, so quotas are
-  enforced correctly whether or not it exists.
+- A second Firestore database, `flamingo-quotas`, holding only request counters,
+  with a conditional write grant and a TTL policy. See the next section.
 
 Never place a GCP JSON key in GitHub. Never grant the runtime identity ingestion
 or provisioning permissions.
 
 ## 3a. Request quotas
+
+### Why the counters have their own database
+
+Firestore grants write access per database. There is no way to grant write on one
+collection, so counters kept beside the corpus would force the serving identity to
+hold write access over `rag_generations` and `rag_meta/current` as well, and a
+compromised container could then rewrite published evidence or repoint the active
+generation. The counters therefore live in a separate database and the runtime
+identity's grant is conditioned on it. Its access to the corpus stays read-only,
+which is the reason ingestion runs under a different principal in the first place.
+
+Provision it once:
+
+```bash
+gcloud firestore databases create \
+  --database=flamingo-quotas \
+  --location="$REGION" \
+  --type=firestore-native \
+  --project "$GCP_PROJECT_ID"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:$GCP_RUNTIME_SERVICE_ACCOUNT" \
+  --role=roles/datastore.user \
+  --condition='title=quota-db-only,expression=resource.name.endsWith("/databases/flamingo-quotas")'
+
+gcloud firestore fields ttls update expires_at \
+  --collection-group=request_quotas --enable-ttl \
+  --project "$GCP_PROJECT_ID" --database=flamingo-quotas
+```
+
+Keep `roles/datastore.viewer` on the corpus database. Do not replace it with an
+unconditional `roles/datastore.user`; that is the grant this separation exists to
+avoid. The TTL policy is housekeeping only, since nothing reads a closed window.
+
+Confirm the runtime identity ends up with exactly a read grant on the corpus and a
+conditioned write grant on the counters:
+
+```bash
+gcloud projects get-iam-policy "$GCP_PROJECT_ID" \
+  --flatten='bindings[].members' \
+  --filter="bindings.members:$GCP_RUNTIME_SERVICE_ACCOUNT" \
+  --format='table(bindings.role, bindings.condition.title)'
+```
+
+### Limits
 
 Two durable ceilings bound what the public endpoint can spend, both counted in
 Firestore so every Cloud Run instance shares one number:
@@ -116,8 +152,8 @@ Firestore so every Cloud Run instance shares one number:
 | Control | Default | Scope | Storage |
 | --- | --- | --- | --- |
 | Burst limiter | 20 per minute | One caller, one instance | In process |
-| Visitor quota | 10 per hour | One caller, whole service | `request_quotas` |
-| Daily budget | 100 per day | Whole service | `request_quotas` |
+| Visitor quota | 10 per hour | One caller, whole service | `flamingo-quotas` |
+| Daily budget | 100 per day | Whole service | `flamingo-quotas` |
 
 Change any of them through the repository variables named in the deploy workflow;
 no code release is needed. Points worth knowing before tuning them:

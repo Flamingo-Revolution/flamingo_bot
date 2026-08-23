@@ -162,13 +162,13 @@ def create_app(
             model_config = load_model_config(runtime_settings.model_config_path)
             model_provider = AzureModelProvider(runtime_settings, model_config)
             vector_store = FirestoreVectorStore(runtime_settings)
-            # The quota shares the vector store's Firestore client so the durable
-            # counters cost one connection rather than a second one.
-            request_quota: RequestQuota = FirestoreRequestQuota(
+            # A second client, against a second database. Firestore grants write
+            # access per database, so this separation is what keeps the corpus
+            # read-only to the serving identity while its counters stay writable.
+            request_quota = FirestoreRequestQuota(
                 runtime_settings,
                 client_quota_window,
                 daily_quota_window,
-                client=vector_store.client,
             )
             bundle = ServiceBundle(
                 embedder=model_provider,
@@ -176,7 +176,7 @@ def create_app(
                 answer_generator=model_provider,
                 query_condenser=model_provider,
                 request_quota=request_quota,
-                closables=(model_provider, vector_store),
+                closables=(model_provider, vector_store, request_quota),
             )
         else:
             bundle = services

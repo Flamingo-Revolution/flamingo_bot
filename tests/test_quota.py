@@ -172,6 +172,35 @@ def firestore_quota(
     return quota, client, clock
 
 
+def test_quota_client_targets_the_quota_database_not_the_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Firestore grants write access per database, never per collection.
+
+    Pointing the counters at the corpus database would mean the serving identity
+    needs write access there, and a compromised container could then rewrite
+    published generations or the active-generation pointer.
+    """
+    captured: dict[str, Any] = {}
+
+    def record_client(**kwargs: Any) -> FakeClient:
+        captured.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr(firestore_module.firestore_v1, "Client", record_client)
+    settings = Settings(
+        _env_file=None,
+        gcp_project_id="test-project",
+        firestore_database_id="flamingo-rag",
+        flamingo_quota_database_id="flamingo-quotas",
+    )
+
+    FirestoreRequestQuota(settings, HOUR, DAY)
+
+    assert captured["database"] == "flamingo-quotas"
+    assert captured["database"] != settings.firestore_database_id
+
+
 def test_firestore_quota_counts_are_shared_state_not_process_state(
     firestore_quota: tuple[FirestoreRequestQuota, FakeClient, Clock],
 ) -> None:

@@ -64,6 +64,10 @@ class Settings(BaseSettings):
 
     gcp_project_id: str | None = None
     firestore_database_id: str = "flamingo-rag"
+    #: Quota counters live in their own database because Firestore IAM cannot scope
+    #: a grant to one collection. Keeping them apart is what lets the serving
+    #: identity write its counters while the knowledge corpus stays read-only to it.
+    flamingo_quota_database_id: str = "flamingo-quotas"
     gcp_impersonate_service_account: str | None = None
 
     flamingo_dossier_repo: Path | None = None
