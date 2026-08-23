@@ -257,3 +257,36 @@ def test_widget_bundle_is_mounted_when_build_output_exists(tmp_path) -> None:
     ]
     assert len(widget_mounts) == 1
     assert widget_mounts[0].name == "widget"
+
+
+@pytest.mark.asyncio
+async def test_root_serves_standalone_chat_and_widget_assets(tmp_path) -> None:
+    (tmp_path / "index.html").write_text(
+        '<flamingo-chat></flamingo-chat><script src="/widget/flamingo-chat.js"></script>',
+        encoding="utf-8",
+    )
+    (tmp_path / "flamingo-chat.js").write_text("export {};", encoding="utf-8")
+    app, _ = await build_app(widget_dir=str(tmp_path))
+
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            page = await client.get("/")
+
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert page.headers["cache-control"] == "no-cache"
+    assert "<flamingo-chat>" in page.text
+    assert "/widget/flamingo-chat.js" in page.text
+
+
+@pytest.mark.asyncio
+async def test_root_reports_unavailable_when_widget_build_is_missing() -> None:
+    app, _ = await build_app()
+
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/")
+
+    assert response.status_code == 503

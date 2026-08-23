@@ -139,6 +139,9 @@ jobs:
             --max-time 20 "$CANDIDATE_URL/health"
           curl --fail --silent --show-error --retry 4 --retry-all-errors \
             --max-time 20 "$CANDIDATE_URL/status"
+          curl --fail --silent --show-error --retry 4 --retry-all-errors \
+            --max-time 20 "$CANDIDATE_URL/" \
+            | grep --fixed-strings '/widget/flamingo-chat.js'
           uv run python scripts/run_evals.py \
             --api-base "$CANDIDATE_URL" \
             --origin "$SMOKE_ORIGIN" \

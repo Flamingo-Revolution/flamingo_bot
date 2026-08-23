@@ -86,8 +86,9 @@ uv run uvicorn flamingo_bot.api:app --reload --port 8000
 npm --prefix frontend run dev
 ```
 
-The API exposes `GET /health`, `GET /status`, `POST /v1/chat`, and—after a widget
-build—static files under `/widget`. The production embed is:
+The API exposes the standalone chat at `GET /`, operational endpoints at
+`GET /health` and `GET /status`, streaming chat at `POST /v1/chat`, and—after a
+widget build—static integration assets under `/widget`. The production embed is:
 
 ```html
 <script type="module" src="https://BOT_HOST/widget/flamingo-chat.js"></script>

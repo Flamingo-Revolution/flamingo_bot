@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
@@ -188,6 +188,20 @@ def create_app(
             StaticFiles(directory=runtime_settings.flamingo_widget_dir),
             name="widget",
         )
+
+    standalone_page = runtime_settings.flamingo_widget_dir / "index.html"
+    standalone_html = (
+        standalone_page.read_text(encoding="utf-8") if standalone_page.is_file() else None
+    )
+
+    @application.get("/", include_in_schema=False)
+    async def standalone_chat() -> HTMLResponse:
+        if standalone_html is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Standalone chat is unavailable because the widget has not been built.",
+            )
+        return HTMLResponse(standalone_html, headers={"Cache-Control": "no-cache"})
 
     @application.get("/health")
     async def health() -> dict[str, str]:

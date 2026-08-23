@@ -1,5 +1,11 @@
 # Widget integration
 
+The deployed service root (`https://BOT_HOST/`) is a standalone version of the
+chatbot. It uses the same custom element and API as embedded installations and
+opens the assistant automatically. Use that page for direct sharing and smoke
+testing; `/widget/flamingo-chat.js` is an integration asset rather than a
+human-facing page.
+
 The production container serves the custom element bundle and its optimized
 avatar media from `/widget`. A host page needs one module script and one element:
 
