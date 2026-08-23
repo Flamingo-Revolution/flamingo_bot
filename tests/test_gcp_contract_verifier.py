@@ -82,13 +82,14 @@ class FakeRunner:
                 "metadata": {
                     "name": "flamingo-bot",
                     "labels": {"cloud.googleapis.com/location": "europe-west3"},
+                    "annotations": {"run.googleapis.com/maxScale": "5"},
                 },
                 "spec": {
                     "template": {
                         "metadata": {
                             "annotations": {
                                 "autoscaling.knative.dev/minScale": "0",
-                                "autoscaling.knative.dev/maxScale": "5",
+                                "autoscaling.knative.dev/maxScale": "100",
                             }
                         },
                         "spec": {

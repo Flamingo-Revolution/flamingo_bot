@@ -5,11 +5,11 @@ Revolution and Diaspora Zbarkon. It uses versioned local content, Azure
 embeddings and Luna responses, Firestore Vector Search, a FastAPI SSE service,
 and an embeddable Svelte custom element.
 
-The dedicated GCP data plane and localhost application are verified end to end.
-Firestore generation `20260823T094238Z-002c3ce5269a` is active in Frankfurt with
-884 source-grounded chunks, and the local API/widget have passed live automatic,
-manual, and browser checks. Production application deployment remains a later
-stage. No Git repository was initialized and no commit was made.
+The dedicated GCP data plane, localhost application, and production Cloud Run
+service are verified end to end. Firestore generation
+`20260823T094238Z-002c3ce5269a` is active in Frankfurt with 884 source-grounded
+chunks. Local and production APIs have passed the full live evaluation suite,
+and the production widget bundle is available for host-site integration.
 
 ## Architecture
 
@@ -231,23 +231,24 @@ uv run python -m flamingo_bot.rollback --to GENERATION_ID --pretty
 
 ## Production boundary
 
-Firestore Native `flamingo-rag` is live in `europe-west3`; Cloud Run, Artifact
-Registry, and production Secret Manager resources remain deferred. The container uses a non-root runtime,
-scale-to-zero-compatible Uvicorn process, and includes the widget plus authorized
-silent avatar media. CI and manual WIF deployment workflows are present. The
+Firestore Native `flamingo-rag`, Artifact Registry, regionally replicated
+secrets, and the Cloud Run service are live in `europe-west3`. The container uses
+a non-root runtime, scales to zero with a service maximum of five instances, and
+includes the widget plus authorized silent avatar media. CI and the protected,
+keyless WIF deployment workflow are active. The
 machine-readable [`infra/contract.yaml`](infra/contract.yaml) and its default
-tests prevent regional, vector, IAM, bootstrap, and zero-traffic release settings from
-drifting silently.
+tests prevent regional, vector, IAM, bootstrap, and zero-traffic release settings
+from drifting silently.
 
 The approved target is a dedicated owner-configured project linked to the
-owner-confirmed billing account. Exact account identifiers stay in the ignored
+owner-confirmed billing account. Exact billing identifiers stay in the ignored
 `.env` and secure deployment variables. Follow the [GCP deployment
 runbook](docs/runbooks/gcp-deployment.md) for the staged workflow.
 
 After provisioning and deployment, `scripts/verify_gcp_contract.py` compares the
 project supplied with `--project` or `GCP_PROJECT_ID`, the billing account
 supplied through `GCP_BILLING_ACCOUNT`, and the resource shape in
-`infra/contract.yaml`.
+`infra/contract.yaml`. The complete production contract currently passes.
 
 The approved [design](docs/plans/2026-08-23-flamingo-rag-chatbot-design.md) and
 [constitution](docs/constitution.md) are normative. The [implementation status](docs/implementation-status.md)

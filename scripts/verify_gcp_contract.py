@@ -185,6 +185,7 @@ def validate_cloud_run(value: Any, project: str, contract: dict[str, Any]) -> Fi
     del project
     data = mapping(value)
     metadata = mapping(data.get("metadata"))
+    service_annotations = mapping(metadata.get("annotations"))
     spec = mapping(data.get("spec"))
     template = mapping(spec.get("template"))
     template_metadata = mapping(template.get("metadata"))
@@ -208,8 +209,18 @@ def validate_cloud_run(value: Any, project: str, contract: dict[str, Any]) -> Fi
         bool(mapping(mapping(env.get(name)).get("valueFrom")).get("secretKeyRef"))
         for name in required_secret_env
     )
-    min_scale = annotations.get("autoscaling.knative.dev/minScale", "0")
-    max_scale = annotations.get("autoscaling.knative.dev/maxScale")
+    # Current Cloud Run exposes service-level scaling configured by ``--min``
+    # and ``--max`` on the Service metadata. Older revisions and fixtures may
+    # expose only revision-level autoscaling annotations, so retain that as a
+    # compatibility fallback.
+    min_scale = service_annotations.get(
+        "run.googleapis.com/minScale",
+        annotations.get("autoscaling.knative.dev/minScale", "0"),
+    )
+    max_scale = service_annotations.get(
+        "run.googleapis.com/maxScale",
+        annotations.get("autoscaling.knative.dev/maxScale"),
+    )
     status = mapping(data.get("status"))
     ready = any(
         mapping(condition).get("type") == "Ready" and mapping(condition).get("status") == "True"

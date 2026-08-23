@@ -2,10 +2,10 @@
 
 ## Status
 
-The dedicated project, Frankfurt Firestore data plane, least-privilege local
-identities, and first publication are live and verified. The repository also
-contains a deployable image and workflow. GitHub repository creation, the initial
-commit, and the production application deployment remain owner-controlled.
+The dedicated project, Frankfurt Firestore data plane, least-privilege
+identities, first publication, and production Cloud Run service are live and
+verified. Production releases run through the protected GitHub environment and
+keyless WIF workflow; each remains owner-approved.
 
 ## 1. Owner authorization and private billing link
 
@@ -42,7 +42,7 @@ A pre-existing project was evaluated and rejected as the deployment target.
 That private inventory is retained only in the ignored security audit; it does
 not help operators deploy this project.
 
-The verified Firestore-first state on 2026-08-23 is:
+The verified production state on 2026-08-23 is:
 
 - The dedicated project is linked to the approved billing account.
 - Firestore Native `flamingo-rag` is in `europe-west3` with delete protection.
@@ -50,8 +50,12 @@ The verified Firestore-first state on 2026-08-23 is:
 - Generation `20260823T094238Z-002c3ce5269a` is active with 884 chunks.
 - The runtime identity is read-only; the ingestion identity has deletion-free,
   database-conditioned create/read/list/update access.
-- Artifact Registry, Secret Manager, Cloud Run, public invoker, and the deployer
-  role are intentionally absent until the production stage.
+- Artifact Registry, three Frankfurt-replicated secrets, the WIF-bound deployer,
+  and the public Cloud Run service match the repository contract.
+- Cloud Run has minimum scale zero, a service maximum of five instances, and
+  one validated revision receiving 100% traffic with its predecessor retained.
+- A project-filtered monthly budget reports gross usage before credits at 50%
+  actual, 90% forecast, and 100% actual thresholds.
 
 The repository also provides a safe, exact-resource verifier. Before
 provisioning it should fail because the resources are absent. After the complete
@@ -74,9 +78,9 @@ Enable only the required APIs and create the fixed resources described in
 The database location is immutable, so `europe-west3` must be rechecked before
 creation. Enable delete protection at creation time.
 
-The Firestore database, two vector indexes, runtime/ingestion identities, and
-their conditioned bindings are complete. During the later application-deploy
-stage, create the remaining regional or region-constrained resources:
+The Firestore database, vector indexes, production delivery resources, and
+least-privilege bindings are complete. A fresh environment must create the same
+regional or region-constrained resources:
 
 - Docker Artifact Registry `flamingo-containers` in `europe-west3`.
 - GitHub deployment service account; reuse the existing dedicated runtime
@@ -135,13 +139,20 @@ Protect the `production` GitHub environment with required review. The manual
 an immutable SHA-tagged image. When a service already exists, it deploys a tagged
 Frankfurt candidate with zero traffic. Cloud Run does not support `--no-traffic`
 while creating a service, so the workflow detects the first deployment and uses
-that revision as the bootstrap candidate. It checks `/health` and `/status`, then runs the versioned
+that revision as the bootstrap candidate. It checks `/health` and `/status`,
+then runs the versioned
 `evals/smoke.yaml` question through that candidate's URL and requires a cited
 Flamingo Revolution answer. The runner does not print the question or answer.
 Only a passing candidate receives 100% traffic. A failed normal candidate loses
 its tag without displacing the current revision. If the first bootstrap candidate
 fails, the workflow also removes public invocation so the failed service is not
 left exposed.
+
+Production `/v1/chat` requests must carry an allowed host-site `Origin`; health,
+readiness, and widget assets remain readable without one. This reduces casual
+direct-endpoint abuse but is not authentication because non-browser clients can
+forge headers. The instance ceiling, per-client limiter, budget alerts, and Azure
+usage monitoring remain necessary cost controls.
 
 ## 6. Rollback
 

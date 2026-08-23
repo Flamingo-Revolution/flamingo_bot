@@ -56,15 +56,28 @@ class ServiceBundle:
 
 
 class OriginGuardMiddleware:
-    def __init__(self, app: ASGIApp, allowed_origins: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        allowed_origins: tuple[str, ...],
+        require_origin_paths: tuple[str, ...] = (),
+    ) -> None:
         self.app = app
         self.allowed_origins = set(allowed_origins)
+        self.require_origin_paths = set(require_origin_paths)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
             origin = Headers(scope=scope).get("origin")
         else:
             origin = None
+        if not origin and scope.get("path") in self.require_origin_paths:
+            response = JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"error": "origin_required"},
+            )
+            await response(scope, receive, send)
+            return
         if origin and origin.rstrip("/") not in self.allowed_origins:
             response = JSONResponse(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -85,7 +98,14 @@ def _client_key(request: Request) -> str:
         for item in request.headers.get("x-forwarded-for", "").split(",")
         if item.strip()
     ]
-    host = forwarded[-1] if forwarded else (request.client.host if request.client else "unknown")
+    # Google appends the connecting client followed by its load-balancer proxy.
+    # Ignore any client-supplied prefix and the final proxy address.
+    if len(forwarded) >= 2:
+        host = forwarded[-2]
+    elif forwarded:
+        host = forwarded[0]
+    else:
+        host = request.client.host if request.client else "unknown"
     return hashlib.sha256(host.encode()).hexdigest()
 
 
@@ -158,6 +178,9 @@ def create_app(
     application.add_middleware(
         OriginGuardMiddleware,
         allowed_origins=runtime_settings.allowed_origins,
+        require_origin_paths=(
+            ("/v1/chat",) if runtime_settings.flamingo_environment == "production" else ()
+        ),
     )
     if runtime_settings.flamingo_widget_dir.is_dir():
         application.mount(

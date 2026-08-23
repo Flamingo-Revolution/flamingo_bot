@@ -1,3 +1,5 @@
+from typing import Literal
+
 import httpx2
 import pytest
 from fastapi import FastAPI
@@ -19,6 +21,7 @@ async def build_app(
     rate_limit: int = 20,
     widget_dir: str | None = None,
     condenser: ScriptedCondenser | None = None,
+    environment: Literal["development", "test", "production"] = "development",
 ) -> tuple[FastAPI, ScriptedAnswerGenerator]:
     embedder = HashEmbedder()
     question = "What is Flamingo Revolution?"
@@ -40,6 +43,7 @@ async def build_app(
         flamingo_rate_limit_requests=rate_limit,
         flamingo_relevance_distance_threshold=0.5,
         flamingo_widget_dir=widget_dir or "missing-widget-directory",
+        flamingo_environment=environment,
     )
     app = create_app(
         settings=settings,
@@ -103,6 +107,28 @@ async def test_disallowed_browser_origin_is_blocked() -> None:
 
 
 @pytest.mark.asyncio
+async def test_production_chat_requires_an_allowed_origin() -> None:
+    app, _ = await build_app(environment="production")
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            health = await client.get("/health")
+            missing = await client.post(
+                "/v1/chat", json={"question": "What is Flamingo Revolution?"}
+            )
+            allowed = await client.post(
+                "/v1/chat",
+                headers={"Origin": "http://localhost:5173"},
+                json={"question": "What is Flamingo Revolution?"},
+            )
+
+    assert health.status_code == 200
+    assert missing.status_code == 403
+    assert missing.json() == {"error": "origin_required"}
+    assert allowed.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_is_enforced_without_logging_question() -> None:
     app, _ = await build_app(rate_limit=1)
     async with app.router.lifespan_context(app):
@@ -115,6 +141,33 @@ async def test_rate_limit_is_enforced_without_logging_question() -> None:
 
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_uses_proxy_appended_client_address() -> None:
+    app, _ = await build_app(rate_limit=1)
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.post(
+                "/v1/chat",
+                headers={"X-Forwarded-For": "198.51.100.1, 203.0.113.10, 35.191.0.1"},
+                json={"question": "What is Flamingo Revolution?"},
+            )
+            spoofed_prefix = await client.post(
+                "/v1/chat",
+                headers={"X-Forwarded-For": "198.51.100.2, 203.0.113.10, 35.191.0.1"},
+                json={"question": "What is Flamingo Revolution?"},
+            )
+            other_client = await client.post(
+                "/v1/chat",
+                headers={"X-Forwarded-For": "198.51.100.2, 203.0.113.11, 35.191.0.1"},
+                json={"question": "What is Flamingo Revolution?"},
+            )
+
+    assert first.status_code == 200
+    assert spoofed_prefix.status_code == 429
+    assert other_client.status_code == 200
 
 
 @pytest.mark.asyncio
