@@ -1,0 +1,5 @@
+# Require the project owner to approve all repository changes.
+* @rlleshi
+
+# Protect the ownership and workflow configuration itself explicitly.
+/.github/ @rlleshi
