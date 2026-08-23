@@ -65,28 +65,53 @@ jobs:
           docker push "$image"
           echo "IMAGE=$image" >> "$GITHUB_ENV"
 
-      - id: candidate
-        name: Deploy zero-traffic candidate revision
+      - id: service_state
+        name: Detect existing Cloud Run service
         shell: bash
         run: |
-          gcloud run deploy "$SERVICE" \
+          service_name="$(gcloud run services list \
             --project "$PROJECT_ID" \
             --region "$REGION" \
-            --image "$IMAGE" \
-            --service-account "$RUNTIME_SERVICE_ACCOUNT" \
-            --port 8080 \
-            --cpu 1 \
-            --memory 512Mi \
-            --concurrency 20 \
-            --min 0 \
-            --max 5 \
-            --timeout 90s \
-            --allow-unauthenticated \
-            --set-env-vars "^@^GCP_PROJECT_ID=$PROJECT_ID@FIRESTORE_DATABASE_ID=$DATABASE@FLAMINGO_ENVIRONMENT=production@FLAMINGO_ALLOWED_ORIGINS=$ALLOWED_ORIGINS" \
-            --set-secrets "AZURE_OPENAI_API_BASE=azure-openai-api-base:latest,AZURE_OPENAI_API_LLM_KEY=azure-openai-api-llm-key:latest,FLAMINGO_SAFETY_SALT=flamingo-safety-salt:latest" \
-            --no-traffic \
-            --tag candidate \
+            --filter "metadata.name=$SERVICE" \
+            --limit 1 \
+            --format='value(metadata.name)')"
+          if [[ "$service_name" == "$SERVICE" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: candidate
+        name: Deploy candidate revision
+        env:
+          SERVICE_EXISTS: ${{ steps.service_state.outputs.exists }}
+        shell: bash
+        run: |
+          deploy_args=(
+            --project "$PROJECT_ID"
+            --region "$REGION"
+            --image "$IMAGE"
+            --service-account "$RUNTIME_SERVICE_ACCOUNT"
+            --port 8080
+            --cpu 1
+            --memory 512Mi
+            --concurrency 20
+            --min 0
+            --max 5
+            --timeout 90s
+            --allow-unauthenticated
+            --set-env-vars "^@^GCP_PROJECT_ID=$PROJECT_ID@FIRESTORE_DATABASE_ID=$DATABASE@FLAMINGO_ENVIRONMENT=production@FLAMINGO_ALLOWED_ORIGINS=$ALLOWED_ORIGINS"
+            --set-secrets "AZURE_OPENAI_API_BASE=azure-openai-api-base:latest,AZURE_OPENAI_API_LLM_KEY=azure-openai-api-llm-key:latest,FLAMINGO_SAFETY_SALT=flamingo-safety-salt:latest"
+            --tag candidate
             --quiet
+          )
+          if [[ "$SERVICE_EXISTS" == "true" ]]; then
+            deploy_args+=(--no-traffic)
+            bootstrap=false
+          else
+            bootstrap=true
+          fi
+          gcloud run deploy "$SERVICE" "${deploy_args[@]}"
           revision="$(gcloud run services describe "$SERVICE" \
             --project "$PROJECT_ID" \
             --region "$REGION" \
@@ -97,6 +122,7 @@ jobs:
             --format='value(status.traffic[?tag="candidate"].url)')"
           test -n "$revision"
           test -n "$candidate_url"
+          echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
           echo "url=$candidate_url" >> "$GITHUB_OUTPUT"
 
@@ -130,9 +156,11 @@ jobs:
             --remove-tags candidate \
             --quiet
 
-      - name: Remove failed candidate route
+      - name: Reject failed candidate
         if: steps.smoke.outcome == 'failure'
         continue-on-error: true
+        env:
+          BOOTSTRAP: ${{ steps.candidate.outputs.bootstrap }}
         shell: bash
         run: |
           gcloud run services update-traffic "$SERVICE" \
@@ -140,6 +168,14 @@ jobs:
             --region "$REGION" \
             --remove-tags candidate \
             --quiet
+          if [[ "$BOOTSTRAP" == "true" ]]; then
+            gcloud run services remove-iam-policy-binding "$SERVICE" \
+              --project "$PROJECT_ID" \
+              --region "$REGION" \
+              --member allUsers \
+              --role roles/run.invoker \
+              --quiet
+          fi
 
       - name: Fail deployment after rejected candidate
         if: steps.smoke.outcome == 'failure'

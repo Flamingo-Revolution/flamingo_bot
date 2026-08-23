@@ -127,10 +127,11 @@ def test_deployment_uses_wif_and_smokes_candidate_before_traffic_promotion() -> 
     contract = load_yaml("infra/contract.yaml")
     steps = workflow_steps()
     auth = step_by_id(steps, "auth")
+    service_state = step_by_id(steps, "service_state")
     candidate = step_by_id(steps, "candidate")
     smoke = step_by_id(steps, "smoke")
     promote = step_by_name(steps, "Promote validated candidate")
-    reject = step_by_name(steps, "Remove failed candidate route")
+    reject = step_by_name(steps, "Reject failed candidate")
 
     workflow_env = workflow["env"]
     assert workflow_env["REGION"] == contract["region"]
@@ -143,11 +144,16 @@ def test_deployment_uses_wif_and_smokes_candidate_before_traffic_promotion() -> 
     assert "service_account" in auth["with"]
     assert "credentials_json" not in auth["with"]
 
+    service_state_run = str(service_state["run"])
     candidate_run = str(candidate["run"])
     smoke_run = str(smoke["run"])
     promote_run = str(promote["run"])
     reject_run = str(reject["run"])
+    assert "gcloud run services list" in service_state_run
+    assert "SERVICE_EXISTS" in candidate["env"]
     assert "--no-traffic" in candidate_run
+    assert 'deploy_args+=(--no-traffic)' in candidate_run
+    assert "bootstrap=true" in candidate_run
     assert f"--tag {contract['cloud_run']['candidate_tag']}" in candidate_run
     assert "--allow-unauthenticated" in candidate_run
     assert "evals/smoke.yaml" in smoke_run
@@ -155,9 +161,12 @@ def test_deployment_uses_wif_and_smokes_candidate_before_traffic_promotion() -> 
     assert "=100" in promote_run
     assert "--remove-tags candidate" in promote_run
     assert "--remove-tags candidate" in reject_run
+    assert "remove-iam-policy-binding" in reject_run
+    assert "roles/run.invoker" in reject_run
     assert promote["if"] == "steps.smoke.outcome == 'success'"
     assert reject["if"] == "steps.smoke.outcome == 'failure'"
-    assert steps.index(candidate) < steps.index(smoke) < steps.index(promote)
+    assert steps.index(service_state) < steps.index(candidate) < steps.index(smoke)
+    assert steps.index(smoke) < steps.index(promote)
 
 
 def test_production_image_defaults_to_non_root_runtime() -> None:

@@ -236,7 +236,7 @@ Registry, and production Secret Manager resources remain deferred. The container
 scale-to-zero-compatible Uvicorn process, and includes the widget plus authorized
 silent avatar media. CI and manual WIF deployment workflows are present. The
 machine-readable [`infra/contract.yaml`](infra/contract.yaml) and its default
-tests prevent regional, vector, IAM, and zero-traffic release settings from
+tests prevent regional, vector, IAM, bootstrap, and zero-traffic release settings from
 drifting silently.
 
 The approved target is a dedicated owner-configured project linked to the

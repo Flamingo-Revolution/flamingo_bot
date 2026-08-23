@@ -131,13 +131,17 @@ these GitHub Actions repository variables:
 - `FLAMINGO_ALLOWED_ORIGINS`
 
 Protect the `production` GitHub environment with required review. The manual
-`Deploy to Cloud Run` workflow runs all tests, authenticates with WIF, pushes an
-immutable SHA-tagged image, and deploys a tagged Frankfurt candidate with zero
-traffic. It checks `/health` and `/status`, then runs the versioned
+`Deploy to Cloud Run` workflow runs all tests, authenticates with WIF, and pushes
+an immutable SHA-tagged image. When a service already exists, it deploys a tagged
+Frankfurt candidate with zero traffic. Cloud Run does not support `--no-traffic`
+while creating a service, so the workflow detects the first deployment and uses
+that revision as the bootstrap candidate. It checks `/health` and `/status`, then runs the versioned
 `evals/smoke.yaml` question through that candidate's URL and requires a cited
 Flamingo Revolution answer. The runner does not print the question or answer.
-Only a passing candidate receives 100% traffic; a failed candidate loses its tag
-without displacing the current revision.
+Only a passing candidate receives 100% traffic. A failed normal candidate loses
+its tag without displacing the current revision. If the first bootstrap candidate
+fails, the workflow also removes public invocation so the failed service is not
+left exposed.
 
 ## 6. Rollback
 
