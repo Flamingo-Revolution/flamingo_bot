@@ -1,13 +1,14 @@
 # Flamingo Bot
 
 Flamingo Bot is an independent, source-grounded RAG assistant for Flamingo
-Revolution and Diaspora Zbarkon. It uses versioned local content, Azure
-embeddings and Luna responses, Firestore Vector Search, a FastAPI SSE service,
+Revolution, its protest map, Flamingo News, and Diaspora Zbarkon. It uses
+versioned content, Azure embeddings and Luna responses, Firestore Vector Search,
+a FastAPI SSE service,
 and an embeddable Svelte custom element.
 
 The dedicated GCP data plane, localhost application, and production Cloud Run
 service are verified end to end. Firestore generation
-`20260823T094238Z-002c3ce5269a` is active in Frankfurt with 884 source-grounded
+`20260924T155907Z-278566f3e1c0` is active in Frankfurt with 1,549 source-grounded
 chunks. Local and production APIs have passed the full live evaluation suite,
 and the production widget bundle is available for host-site integration.
 
@@ -116,14 +117,20 @@ resolves the source catalog, then the repository path each catalog entry names.
 | Source id | Repository setting | Ingested content |
 | --- | --- | --- |
 | `flamingo-dossier` | `FLAMINGO_DOSSIER_REPO` | `data/dosje.csv`, with entity relations joined from `data/lidhje.csv` |
-| `flamingo-revolution` | `FLAMINGO_REVOLUTION_REPO` | `public/llms.txt`, blog and page Markdown, selected `src/data/*.ts`, public PDFs |
+| `flamingo-revolution` | `FLAMINGO_REVOLUTION_REPO` | `public/llms.txt`, blog and page Markdown, selected `src/data/*.ts`, public PDFs including Flamingo Times, and published Flamingo News articles fetched from the public site |
 | `diaspora-zbarkon` | `DIASPORA_ZBARKON_REPO` | `specs/Mission.md`, `lib/content.ts`, the /pulsi page copy, and the protest participation series |
+| `flamingo-revolution` (map) | `FLAMINGO_MAP_REPO` | `data/locations.json`: one document per city and protest, plus map-wide totals; cites `/harta/` |
 
-No source content is copied into this repository. The dossier CSVs live in the
-dossier checkout and are read in place, so the commit SHA recorded against every
-chunk points at the repository that people actually edit. The only durable
-output of ingestion is the Firestore generation; nothing is written to local
-disk.
+The dossier, Revolution, Diaspora, and map content is read from clean local
+checkouts. Their Git revisions are recorded in the generation manifest. Flamingo
+News is fetched from the public `/news/` listing on each run; only published
+article pages enter the corpus. Two dated, one-time snapshots are stored under
+`content/snapshots/`: 17 public informational pages of Referendum 21/2024 and
+the author's Pulsi analysis originally posted on Reddit, split into two topic
+records for retrieval. Routine ingestion reads these snapshots, but does not
+refresh either external site. Referendum
+pages can be intentionally recaptured with `uv run python
+scripts/snapshot_referendum21.py` and reviewed before the next publication.
 
 ### Refreshing existing data
 
@@ -154,9 +161,8 @@ For parser or chunker work without Google credentials or network access, use
 `--dry-run --local-only`. That mode labels its report `local-source-only` and
 cannot claim an exact diff against production.
 
-The verified 2026-08-23 baseline is 44 files, 98 documents, 884 chunks, no
-failures, and no skips. It is expected to change when the source repositories
-change. To undo a publication, see the rollback command below.
+The 2026-08-23 baseline was 44 files, 98 documents, and 884 chunks. Counts change
+as the sources grow. To undo a publication, see the rollback command below.
 
 ### Adding a new source
 
@@ -171,7 +177,9 @@ switch need no changes. Four places do.
    named by that entry's `repository_setting`, add it to the optional-path
    validator, and document the variable in `.env.example`. `resolve_sources()`
    raises `ConfigurationError` when the field is absent or unset.
-3. **`src/flamingo_bot/retrieval.py`, `_SOURCE_IDS`**: add the id. `retrieve()`
+3. **`src/flamingo_bot/retrieval.py`, `_SOURCE_IDS`**: add the id if it is new.
+   The map deliberately shares the Revolution retrieval id while recording its
+   own `revision_key`, so it can be retrieved without a Cloud Run redeploy. `retrieve()`
    issues one filtered vector query per id in that tuple and issues no
    unfiltered query, so a source missing from it is parsed, chunked, embedded,
    billed, and stored, and then never retrieved. Nothing fails and no error is

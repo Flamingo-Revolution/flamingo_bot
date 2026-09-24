@@ -20,11 +20,12 @@ from flamingo_bot.models import (
     GenerationManifest,
     IngestionCounts,
     IngestionReport,
+    SourceDocument,
 )
 from flamingo_bot.parsers import NORMALIZATION_VERSION, PARSER_VERSION, parse_sources
 from flamingo_bot.providers.azure import AzureModelProvider
 from flamingo_bot.providers.firestore import FirestoreVectorStore
-from flamingo_bot.sources import load_source_catalog, resolve_sources
+from flamingo_bot.sources import ResolvedSource, load_source_catalog, resolve_sources
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +60,27 @@ def removed_chunk_count(active_counts: dict[str, int], current_counts: Counter[s
         max(active_count - current_counts.get(content_hash, 0), 0)
         for content_hash, active_count in active_counts.items()
     )
+
+
+def source_revisions_for(
+    sources: list[ResolvedSource], documents: list[SourceDocument]
+) -> dict[str, str]:
+    revisions = {
+        source.definition.revision_key or source.definition.id: source.revision
+        for source in sources
+    }
+    supplemental: dict[str, list[str]] = {}
+    for document in documents:
+        group = document.metadata.get("snapshot_group")
+        if group is None and document.metadata.get("source_kind") == "public-news":
+            group = "flamingo-news"
+        if isinstance(group, str) and group:
+            supplemental.setdefault(group, []).append(document.revision)
+    for group, document_revisions in supplemental.items():
+        revisions[group] = hashlib.sha256(
+            "\n".join(sorted(document_revisions)).encode("utf-8")
+        ).hexdigest()
+    return revisions
 
 
 async def run_dry_run(settings: Settings, *, local_only: bool = False) -> IngestionReport:
@@ -113,7 +135,7 @@ async def run_dry_run(settings: Settings, *, local_only: bool = False) -> Ingest
         started_at=started_at,
         completed_at=completed_at,
         counts=counts,
-        source_revisions={source.definition.id: source.revision for source in sources},
+        source_revisions=source_revisions_for(sources, documents),
         issues=issues,
         published=False,
         generation_id=None,
@@ -139,9 +161,13 @@ async def run_publish(settings: Settings) -> IngestionReport:
         raise PublicationError("Refusing to publish an empty generation")
     source_document_counts = Counter(document.source_id for document in documents)
     missing_sources = [
-        source.definition.id
+        source.definition.revision_key or source.definition.id
         for source in sources
-        if source_document_counts[source.definition.id] == 0
+        if not any(
+            document.source_id == source.definition.id
+            and document.repository_path == str(source.repository_path)
+            for document in documents
+        )
     ]
     if missing_sources:
         raise PublicationError(
@@ -167,7 +193,7 @@ async def run_publish(settings: Settings) -> IngestionReport:
             for chunk, vector in zip(pending, vectors, strict=True):
                 chunk.embedding = vector
 
-        source_revisions = {source.definition.id: source.revision for source in sources}
+        source_revisions = source_revisions_for(sources, documents)
         current_counts = Counter(chunk.content_hash for chunk in chunks)
         removed_chunks = removed_chunk_count(snapshot.content_hash_counts, current_counts)
         generation_fingerprint = hashlib.sha256(

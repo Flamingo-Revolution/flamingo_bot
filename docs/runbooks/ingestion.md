@@ -2,7 +2,8 @@
 
 ## Source update workflow
 
-1. Update the three approved local repositories with their normal Git workflow.
+1. Update the four approved local repositories (Dossier, Revolution, Diaspora,
+   and Harta e Protestave) with their normal Git workflow.
 2. Inspect their changes and commit them. Ingestion never performs `git pull` and
    refuses a repository with tracked or untracked working-tree changes.
 3. Run the dry-run and review counts, revisions, skips, and failures.
@@ -42,10 +43,19 @@ it cannot overwrite a colliding generation created by another publisher.
 
 - Flamingo Dossier: `data/dosje.csv` plus relations from `data/lidhje.csv`.
 - Flamingo Revolution: `public/llms.txt`, public Markdown, selected structured
-  TypeScript content, and public legal/editorial PDFs.
+  TypeScript content, and public legal/editorial PDFs, including Flamingo Times.
+  The public `/news/` index is also scanned for published article pages on each
+  run; this content is served from the site's CMS, not its Git checkout.
 - Diaspora Zbarkon: mission copy, primary content, the /pulsi page copy from
   `components/live-tracker-page.tsx`, and the protest participation series from
   `data/participation.ts`.
+- Harta e Protestave: `data/locations.json` from `FLAMINGO_MAP_REPO`, with each
+  city, protest, and the dataset-wide summary recorded separately. The map
+  shares the Revolution retrieval ID but has its own `flamingo-map` revision.
+- One-time snapshots: 17 dated Referendum 21/2024 pages and two topic records
+  covering the author's Reddit Pulsi analysis under `content/snapshots/`.
+  Routine ingestion never re-fetches these sites. Review any intentional
+  snapshot update before publishing.
 
 `data/participation.ts` uses the dedicated `participation_ts` parser. The generic
 string extractor keeps only long string literals, which drops every figure and
@@ -59,13 +69,13 @@ be read as a count of people.
 - Explicit code-only exclusions: `src/data/referendum.ts`, `src/data/navIcons.ts`,
   and `src/data/socialIcons.ts` in the Revolution site.
 
-Adding a source to this contract touches the catalog, `Settings`, retrieval's
+Adding a new retrieval ID touches the catalog, `Settings`, retrieval's
 `_SOURCE_IDS`, and sometimes a parser. The README's "Adding a new source"
-section is the checklist; omitting `_SOURCE_IDS` ingests and bills the source
-without ever retrieving it.
+section is the checklist; omitting a distinct ID from `_SOURCE_IDS` ingests and
+bills the source without ever retrieving it.
 
-The validated 2026-08-23 dry-run found 44 files, 98 documents, 884 chunks, no
-failed files, and no unexpected skips. Those values are a comparison baseline,
+The 2026-09-24 publication has 86 discovered files/pages, 595 documents, 1,549
+chunks, no failed files, and no skips. These counts are a comparison baseline,
 not a permanent requirement; source changes should change them visibly.
 
 ## Failure handling

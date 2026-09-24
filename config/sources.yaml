@@ -35,6 +35,16 @@ sources:
         include:
           - public/documents/**/*.pdf
           - public/referendum/**/*.pdf
+      # Published articles live in the site's CMS database, outside this Git
+      # checkout. Fetch only public /news/ pages during each ingestion run.
+      - parser: public_news
+        include: []
+      # A dated, one-time snapshot of the separate referendum site.
+      - parser: snapshot_markdown
+        include:
+          - referendum21/*.md
+        options:
+          root: content/snapshots
 
   - id: diaspora-zbarkon
     label: Diaspora Zbarkon
@@ -58,3 +68,22 @@ sources:
       - parser: participation_ts
         include:
           - data/participation.ts
+      # The author's one-time analysis of the Pulsi series.
+      - parser: snapshot_markdown
+        include:
+          - pulsi-reddit/*.md
+        options:
+          root: content/snapshots
+
+  # Shares the Revolution retrieval filter so the currently deployed service
+  # can use map evidence immediately, while keeping its own Git revision.
+  - id: flamingo-revolution
+    label: Harta e Protestave
+    repository_setting: flamingo_map_repo
+    revision_key: flamingo-map
+    language: sq
+    base_url: https://www.flamingorevolution.eu/harta/
+    rules:
+      - parser: map_json
+        include:
+          - data/locations.json

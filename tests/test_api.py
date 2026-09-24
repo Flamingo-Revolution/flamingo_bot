@@ -402,3 +402,32 @@ async def test_unreadable_quota_store_fails_closed() -> None:
     assert response.status_code == 503
     assert response.json()["detail"] == "quota_unavailable"
     assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_widget_script_revalidates_but_media_is_cached_hard(tmp_path) -> None:
+    """The bundle's filename is stable, so freshness has to come from the header.
+
+    Embedding sites hardcode /widget/flamingo-chat.js. Without an explicit policy a
+    browser caches it heuristically and keeps serving a superseded widget after a
+    release, which is how a shipped copy change fails to reach anyone.
+    """
+    (tmp_path / "flamingo-chat.js").write_text("export {};", encoding="utf-8")
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "flamingo-avatar-loop.webm").write_bytes(b"\x1a\x45\xdf\xa3")
+    app, _ = await build_app(widget_dir=str(tmp_path))
+
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            script = await client.get("/widget/flamingo-chat.js")
+            clip = await client.get("/widget/media/flamingo-avatar-loop.webm")
+
+    assert script.status_code == 200
+    assert script.headers["cache-control"] == "no-cache"
+    # An ETag is what makes revalidation cheap: usually a 304 with no body.
+    assert script.headers.get("etag")
+
+    assert clip.status_code == 200
+    assert "immutable" in clip.headers["cache-control"]

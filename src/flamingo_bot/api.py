@@ -6,11 +6,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from os import PathLike
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -19,6 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
+from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flamingo_bot.config import Settings, get_settings, load_model_config
@@ -93,6 +96,39 @@ class OriginGuardMiddleware:
 
 def _sse(event: str, payload: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+class WidgetStaticFiles(StaticFiles):
+    """Serves the widget with an explicit freshness policy.
+
+    Third-party pages hardcode ``/widget/flamingo-chat.js``, so the bundle cannot
+    carry a content hash in its name the way an app build would. Starlette sends
+    an ETag but no ``Cache-Control``, and a browser given no policy falls back to
+    heuristic caching, which lets an embedding site keep serving a superseded
+    widget long after a release. Since the name is stable, freshness has to come
+    from the header instead.
+
+    The script and its styles revalidate on every load, which costs one
+    conditional request and usually returns 304 with no body. The avatar media is
+    large, changes only when the assets are replaced, and is cached hard.
+    """
+
+    #: Immutable enough to cache for a year; replacing these means a new release.
+    LONG_LIVED_SUFFIXES = (".mp4", ".webm", ".webp", ".woff2", ".png", ".jpg", ".svg")
+
+    def file_response(
+        self,
+        full_path: str | PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        if str(full_path).endswith(self.LONG_LIVED_SUFFIXES):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _client_address(request: Request, trusted_proxy_hops: int) -> str:
@@ -231,7 +267,7 @@ def create_app(
     if runtime_settings.flamingo_widget_dir.is_dir():
         application.mount(
             "/widget",
-            StaticFiles(directory=runtime_settings.flamingo_widget_dir),
+            WidgetStaticFiles(directory=runtime_settings.flamingo_widget_dir),
             name="widget",
         )
 

@@ -24,6 +24,7 @@ class SourceDefinition(BaseModel):
     id: str
     label: str
     repository_setting: str
+    revision_key: str | None = None
     language: str
     base_url: str
     rules: list[SourceRule]

@@ -5,19 +5,23 @@ from __future__ import annotations
 import csv
 import hashlib
 import html
+import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.error import URLError
+from urllib.parse import urljoin, urlparse
 
 import yaml
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from flamingo_bot.config import PROJECT_ROOT
 from flamingo_bot.models import IngestionIssue, SourceDocument
 from flamingo_bot.sources import ResolvedSource, SourceRule, discover_rule_files
+from flamingo_bot.web_content import discover_news_urls, extract_main_text, fetch_public_html
 
 PARSER_VERSION = "1.1.0"
 NORMALIZATION_VERSION = "1.0.0"
@@ -66,6 +70,13 @@ def _canonical_url(source: ResolvedSource, relative_path: str) -> str:
     if source.definition.id == "flamingo-revolution":
         if relative_path == "public/llms.txt":
             return base
+        issue = re.fullmatch(
+            r"public/documents/flamingo-times/flamingo-times-botimi-(i|\d+)\.pdf",
+            relative_path,
+        )
+        if issue:
+            number = "1" if issue.group(1) == "i" else issue.group(1)
+            return f"{base}flamingo-times/artikujt/botimi-{number}/"
         blog = re.match(r"src/content/blog/([^/]+)/", relative_path)
         if blog:
             return f"{base}blog/{blog.group(1)}/"
@@ -651,7 +662,7 @@ def _parse_generic(source: ResolvedSource, path: Path, parser: str) -> SourceDoc
         text = normalize_text(_read_text(path))
         metadata: dict[str, Any] = {}
         content_type = "text"
-    elif parser == "markdown":
+    elif parser in {"markdown", "snapshot_markdown"}:
         text, metadata = _strip_markdown(_read_text(path))
         if metadata.get("draft") is True:
             return None
@@ -672,15 +683,196 @@ def _parse_generic(source: ResolvedSource, path: Path, parser: str) -> SourceDoc
         return None
     title = str(metadata.get("title") or _title_from_text(text, path.stem))
     sticky = f"Source: {source.definition.label}\nDocument: {title}"
-    return _base_document(
+    canonical_url = None
+    if parser == "snapshot_markdown":
+        candidate = metadata.get("canonical_url")
+        if not isinstance(candidate, str) or not _valid_url(candidate):
+            raise ValueError(f"Snapshot requires a valid canonical_url: {relative_path}")
+        canonical_url = candidate
+        snapshot_date = metadata.get("snapshot_date")
+        if snapshot_date:
+            sticky += f"\nSnapshot date: {snapshot_date}. Check the linked site for current status."
+    document = _base_document(
         source,
         relative_path,
         title,
         text,
         content_type,
+        canonical_url=canonical_url,
         sticky_context=sticky,
         metadata=metadata,
     )
+    if parser == "snapshot_markdown":
+        label = metadata.get("source_label")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"Snapshot requires source_label: {relative_path}")
+        return document.model_copy(
+            update={
+                "source_label": label.strip(),
+                "revision": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return document
+
+
+def _parse_public_news(source: ResolvedSource) -> list[SourceDocument]:
+    index_url = urljoin(source.definition.base_url.rstrip("/") + "/", "news/")
+    urls = discover_news_urls(fetch_public_html(index_url), index_url)
+    if not urls or len(urls) > 200:
+        raise ValueError(f"Expected 1-200 published Flamingo News articles; found {len(urls)}")
+    documents: list[SourceDocument] = []
+    for url in urls:
+        title, text = extract_main_text(fetch_public_html(url), required_class="news-article")
+        slug = urlparse(url).path.rstrip("/").split("/")[-1]
+        revision = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        document = _base_document(
+            source,
+            f"public-news/{slug}.html",
+            title,
+            text,
+            "public-news",
+            canonical_url=url,
+            sticky_context=f"Source: Flamingo News\nArticle: {title}",
+            metadata={"source_kind": "public-news", "source_revision": revision},
+        )
+        documents.append(
+            document.model_copy(
+                update={
+                    "source_label": "Flamingo News",
+                    "repository_path": index_url,
+                    "revision": revision,
+                }
+            )
+        )
+    return documents
+
+
+def _parse_map_locations(source: ResolvedSource, path: Path) -> list[SourceDocument]:
+    locations = json.loads(_read_text(path))
+    if not isinstance(locations, list) or not locations:
+        raise ValueError("Map locations must be a nonempty JSON array")
+    relative_path = path.relative_to(source.repository_path).as_posix()
+    documents: list[SourceDocument] = []
+    countries: set[str] = set()
+    protest_records = 0
+    protest_days = 0
+    for location in locations:
+        if not isinstance(location, dict):
+            raise ValueError("Map location must be an object")
+        city_id = str(location.get("id") or "").strip()
+        city = str(location.get("city") or location.get("title") or "").strip()
+        country = str(location.get("country") or "").strip()
+        protests = location.get("protests")
+        if not city_id or not city or not isinstance(protests, list):
+            raise ValueError("Map location lacks an id, city, or protest list")
+        countries.add(country)
+        protest_records += len(protests)
+        protest_days += sum(int(protest.get("dayCount") or 0) for protest in protests)
+        city_lines = [
+            f"Harta e Protestave: {city}, {country}.",
+            f"Map label: {location.get('title') or city}.",
+            f"Map location type: {location.get('type') or 'not specified'}.",
+            f"Map coordinates: {location.get('latitude')}, {location.get('longitude')}.",
+            f"Local Flamingo chapter active: {'yes' if location.get('chapterActive') else 'no'}.",
+            f"Protest records for this city: {len(protests)}.",
+            f"Protest days for this city: {location.get('protestCount', 'not specified')}.",
+        ]
+        for field, label in (
+            ("cityUrl", "City page"),
+            ("instagramUrl", "Instagram"),
+            ("facebookUrl", "Facebook"),
+            ("drive_gallery_url", "Photo gallery"),
+        ):
+            value = location.get(field)
+            if isinstance(value, str) and _valid_url(value):
+                city_lines.append(f"{label}: {value}")
+        documents.append(
+            _base_document(
+                source,
+                relative_path,
+                f"Harta e Protestave — {city}, {country}",
+                "\n".join(city_lines),
+                "map-city",
+                sticky_context=f"Source: Harta e Protestave\nCity: {city}, {country}",
+                metadata={"record_id": f"city:{city_id}", "city_id": city_id},
+                identity_suffix=f"city:{city_id}",
+            )
+        )
+        for protest in protests:
+            if not isinstance(protest, dict):
+                raise ValueError(f"Map protest in {city_id} must be an object")
+            protest_id = str(protest.get("id") or "").strip()
+            title = str(protest.get("title") or "").strip()
+            start_date = str(protest.get("startDate") or "").strip()
+            if not protest_id or not title or not start_date:
+                raise ValueError(f"Map protest in {city_id} lacks id, title, or start date")
+            end_date = str(protest.get("endDate") or "").strip()
+            lines = [
+                f"Protest: {title}.",
+                f"City: {city}, {country}.",
+                f"Date: {start_date}" + (f" through {end_date}." if end_date else "."),
+                f"Protest days in this record: {protest.get('dayCount', 'not specified')}.",
+            ]
+            for field, label in (
+                ("location", "Meeting location"),
+                ("description", "Description"),
+                ("importance", "Map importance"),
+                ("participants", "Reported participants"),
+                ("source", "Map source"),
+                ("sourceUrl", "Original source URL"),
+            ):
+                value = protest.get(field)
+                if value is not None and str(value).strip():
+                    lines.append(f"{label}: {value}")
+            documents.append(
+                _base_document(
+                    source,
+                    relative_path,
+                    f"{title} — {city}, {start_date}",
+                    "\n".join(lines),
+                    "map-protest",
+                    sticky_context=(
+                        f"Source: Harta e Protestave\nProtest: {title}\n"
+                        f"Place: {city}, {country}\nDate: {start_date}"
+                    ),
+                    metadata={
+                        "record_id": f"protest:{protest_id}",
+                        "city_id": city_id,
+                        "protest_id": protest_id,
+                    },
+                    identity_suffix=f"protest:{protest_id}",
+                )
+            )
+    documents.append(
+        _base_document(
+            source,
+            relative_path,
+            "Sa qytete, shtete, protesta dhe ditë proteste ka Harta e Protestave?",
+            (
+                "Statistikat e përgjithshme të Hartës së Protestave Flamingo. "
+                f"Harta ka gjithsej {len(locations)} qytete ose lokacione në "
+                f"{len(countries)} shtete, {protest_records} regjistra protestash "
+                f"dhe {protest_days} ditë proteste. "
+                "Një protestë shumëditore është një regjistër, por numërohet si "
+                "disa ditë proteste. Këto janë totalet e gjithë hartës, jo një "
+                "kampion i disa qyteteve. Harta përditësohet veçmas; për "
+                "shifrat më të fundit kontrolloni hartën e publikuar."
+            ),
+            "map-overview",
+            sticky_context=(
+                "Burimi: Harta e Protestave\n"
+                "Statistikat e përgjithshme të gjithë hartës"
+            ),
+            metadata={
+                "location_count": len(locations),
+                "country_count": len(countries),
+                "protest_record_count": protest_records,
+                "protest_day_count": protest_days,
+            },
+            identity_suffix="overview",
+        )
+    )
+    return documents
 
 
 def parse_sources(
@@ -691,17 +883,50 @@ def parse_sources(
     discovered_files = 0
     for source in sources:
         for rule in source.definition.rules:
-            files = discover_rule_files(source.repository_path, rule)
+            if rule.parser == "public_news":
+                try:
+                    news_documents = _parse_public_news(source)
+                    documents.extend(news_documents)
+                    discovered_files += len(news_documents)
+                except (OSError, URLError, ValueError, TimeoutError) as exc:
+                    issues.append(
+                        IngestionIssue(
+                            source_id=source.definition.id,
+                            relative_path="public-news/",
+                            reason=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                continue
+            rule_source = source
+            if rule.parser == "snapshot_markdown":
+                root_option = rule.options.get("root")
+                if not isinstance(root_option, str) or not root_option:
+                    raise ValueError("snapshot_markdown requires a root option")
+                snapshot_root = (PROJECT_ROOT / root_option).resolve()
+                if not snapshot_root.is_relative_to(PROJECT_ROOT / "content" / "snapshots"):
+                    raise ValueError("Snapshot root must be under content/snapshots")
+                rule_source = source.model_copy(update={"repository_path": snapshot_root})
+            files = discover_rule_files(rule_source.repository_path, rule)
+            if rule.parser == "snapshot_markdown" and not files:
+                issues.append(
+                    IngestionIssue(
+                        source_id=source.definition.id,
+                        relative_path=str(rule_source.repository_path),
+                        reason="No snapshot files found",
+                    )
+                )
             discovered_files += len(files)
             for path in files:
-                relative_path = path.relative_to(source.repository_path).as_posix()
+                relative_path = path.relative_to(rule_source.repository_path).as_posix()
                 try:
                     if rule.parser == "dossier_csv":
                         documents.extend(_parse_dossier(source, path, rule))
                     elif rule.parser == "participation_ts":
                         documents.extend(_parse_participation(source, path, rule))
+                    elif rule.parser == "map_json":
+                        documents.extend(_parse_map_locations(source, path))
                     else:
-                        document = _parse_generic(source, path, rule.parser)
+                        document = _parse_generic(rule_source, path, rule.parser)
                         if document is None:
                             issues.append(
                                 IngestionIssue(
