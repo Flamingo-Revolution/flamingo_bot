@@ -74,6 +74,22 @@ operator needs to turn the feature off for a deployment, set
 `FLAMINGO_HISTORY_TURNS=0`; the widget keeps displaying the transcript while the
 backend answers each question independently again.
 
+## Suggested questions
+
+An empty chat shows two distinct questions randomly selected from eleven
+curated, source-tested topics. They disappear after the first question and
+return after **New chat**. Merely displaying them makes no API request; clicking
+one submits it through the normal chat and quota path. The chip uses a short
+label, while the full submitted question is visible in the conversation.
+
+The host document's `<html lang>` selects English for `en`/`en-*` and Albanian
+otherwise. Set that attribute on an embedded host page; the standalone page
+already uses English. English suggestions explicitly request an English answer
+because the current model sometimes follows the language of retrieved Albanian
+sources instead of the visitor's question. Edit the bilingual bank in
+`frontend/src/lib/suggestions.ts` only after checking the proposed questions
+against the live corpus.
+
 ## Name and disclosure
 
 The assistant is called **Diella - Flamingo Style**. The name deliberately
@@ -89,8 +105,8 @@ not remove it, move it below the fold, or embed the widget on a page that
 presents it as official.
 
 The welcome message is bilingual, Albanian first, which is also the first signal
-to a visitor that they may write in their own language. The rest of the widget
-chrome is English.
+to a visitor that they may write in their own language. Suggested-question chips
+follow the host language; the other widget controls remain in English.
 
 The name is long enough to wrap in the panel header. It is typeset to break
 after the hyphen, and the header was verified at 1280, 390, and 320 pixels wide.

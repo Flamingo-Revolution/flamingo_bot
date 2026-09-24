@@ -17,6 +17,7 @@
   import { refusalBubble, refusalMessage, refusalReason } from "./lib/refusal";
   import { parseRichText, type InlineNode } from "./lib/richtext";
   import { consumeEventStream, type ServerEvent } from "./lib/sse";
+  import { selectSuggestions, type SelectedSuggestion } from "./lib/suggestions";
 
   type Citation = {
     id: string;
@@ -58,6 +59,7 @@
   let abortController: AbortController | null = null;
   let motionQuery: MediaQueryList | null = null;
   let messageSerial = 0;
+  let suggestions: SelectedSuggestion[] = [];
 
   // Albanian first, because it is the first signal that a visitor may write in
   // their own language. The blank line renders the two as separate paragraphs.
@@ -134,8 +136,8 @@
     }
   }
 
-  async function submit() {
-    const trimmed = question.trim();
+  async function submitQuestion(rawQuestion: string) {
+    const trimmed = rawQuestion.trim();
     if (submitting || trimmed.length < 2) return;
 
     errorMessage = "";
@@ -193,9 +195,14 @@
     }
   }
 
+  function submit() {
+    void submitQuestion(question);
+  }
+
   async function startNewConversation() {
     abortController?.abort();
     messages = [welcomeMessage()];
+    suggestions = selectSuggestions(document.documentElement.lang);
     messageSerial = 0;
     errorMessage = "";
     followLatestMessage = true;
@@ -205,6 +212,7 @@
 
   async function showDialog() {
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (messages.length === 1) suggestions = selectSuggestions(document.documentElement.lang);
     open = true;
     await tick();
     inputElement?.focus();
@@ -352,7 +360,7 @@
     <p class="disclosure">
       Diella 2.0 është parodi e Diellës së qeverisë shqiptare dhe projekt i pavarur i Revolucionit
       Flamingo; nuk është shërbim shtetëror. Mesazhet dërgohen për përpunim, por historiku i bisedës
-      mbahet vetëm në shfletuesin tënd dhe nuk ruhet në serverin tonë.
+      mbahet vetëm në browserin tënd dhe nuk ruhet në serverin tonë.
     </p>
 
     <div
@@ -395,6 +403,24 @@
 
     <form on:submit|preventDefault={submit}>
       <label for="flamingo-question">Your question</label>
+      {#if messages.length === 1 && suggestions.length === 2}
+        <div
+          class="suggestions"
+          role="group"
+          aria-label={document.documentElement.lang.toLowerCase().startsWith("en")
+            ? "Suggested questions"
+            : "Pyetje të sugjeruara"}
+        >
+          {#each suggestions as suggestion (suggestion.id)}
+            <button
+              type="button"
+              disabled={submitting}
+              aria-label={suggestion.question}
+              on:click={() => void submitQuestion(suggestion.question)}
+            >{suggestion.label}</button>
+          {/each}
+        </div>
+      {/if}
       <div class="composer">
         <textarea
           id="flamingo-question"
@@ -733,6 +759,37 @@
     height: 1px;
     overflow: hidden;
     clip: rect(0 0 0 0);
+  }
+
+  .suggestions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin-bottom: 9px;
+  }
+
+  .suggestions button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 7px 9px;
+    border: 1px solid #eab7ca;
+    border-radius: 12px;
+    background: #fff6f9;
+    color: #8f1745;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+
+  .suggestions button:hover {
+    background: #ffeaf1;
+  }
+
+  .suggestions button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   .composer {
