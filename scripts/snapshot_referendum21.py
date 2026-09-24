@@ -73,8 +73,8 @@ def main() -> None:
         snapshots.append((Path(filename), f"---\n{frontmatter}---\n\n{text}\n"))
     target = PROJECT_ROOT / "content" / "snapshots" / "referendum21"
     target.mkdir(parents=True, exist_ok=True)
-    for filename, content in snapshots:
-        (target / filename).write_text(content, encoding="utf-8")
+    for snapshot_path, content in snapshots:
+        (target / snapshot_path).write_text(content, encoding="utf-8")
     print(f"Captured {len(snapshots)} public pages from {BASE} into {target}")
 
 

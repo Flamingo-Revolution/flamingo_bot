@@ -350,8 +350,9 @@
     </header>
 
     <p class="disclosure">
-      An independent Flamingo Revolution project—not a government service or a live representative.
-      This conversation stays in your browser and is not stored.
+      Diella 2.0 është parodi e Diellës së qeverisë shqiptare dhe projekt i pavarur i Revolucionit
+      Flamingo; nuk është shërbim shtetëror. Mesazhet dërgohen për përpunim, por historiku i bisedës
+      mbahet vetëm në shfletuesin tënd dhe nuk ruhet në serverin tonë.
     </p>
 
     <div

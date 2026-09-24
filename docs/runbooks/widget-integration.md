@@ -81,11 +81,12 @@ references the Albanian government's own AI program, which makes the disclosure
 load-bearing rather than decorative: a visitor must not be able to mistake this
 for the state service it comments on.
 
-The visible disclosure must remain: this is an independent Flamingo Revolution
-AI project, not a government service or live representative, and the disclosure
-also states that the conversation stays in the visitor's browser. Do not shorten
-it, move it below the fold, or embed the widget on a page that presents it as
-official.
+The visible Albanian disclosure identifies Diella 2.0 as a parody of the
+government's Diella and an independent Flamingo Revolution project, not a state
+service. It also explains that messages are sent for processing while the chat
+history remains in the visitor's browser and is not stored on our server. Do
+not remove it, move it below the fold, or embed the widget on a page that
+presents it as official.
 
 The welcome message is bilingual, Albanian first, which is also the first signal
 to a visitor that they may write in their own language. The rest of the widget
