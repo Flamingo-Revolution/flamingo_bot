@@ -19,8 +19,10 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from flamingo_bot.config import PROJECT_ROOT
+from flamingo_bot.lapsi import read_reference_index
 from flamingo_bot.models import IngestionIssue, SourceDocument
-from flamingo_bot.sources import ResolvedSource, SourceRule, discover_rule_files
+from flamingo_bot.research import read_research_evidence
+from flamingo_bot.sources import ResolvedSource, SourceRule, content_revision, discover_rule_files
 from flamingo_bot.web_content import discover_news_urls, extract_main_text, fetch_public_html
 
 PARSER_VERSION = "1.1.0"
@@ -288,6 +290,7 @@ def _parse_participation(
 
     index_lines: list[str] = []
     day_paragraphs: list[str] = []
+    daily_documents: list[SourceDocument] = []
     measured: list[tuple[int, str, float]] = []
     for entry in _js_object_literals(_js_array_body(code, "participation")):
         number = _js_number_field(entry, "day")
@@ -324,6 +327,57 @@ def _parse_participation(
                 "Livestream: " + _TEMPLATE_SLOT_RE.sub(stream.group(1), livestream_template)
             )
         day_paragraphs.append("\n".join(detail))
+        if rule.parser == "participation_days":
+            livestream = (
+                ""
+                if stream is None
+                else _TEMPLATE_SLOT_RE.sub(stream.group(1), livestream_template)
+            )
+            for language, note_text in (("sq", note_sq), ("en", note_en)):
+                if not note_text and (note_sq or note_en):
+                    continue
+                title = f"Revolucioni Flamingo — Dita {day} / Day {day}, {iso_date}"
+                body = [
+                    f"{heading}.",
+                    "Flamingo Revolution / Revolucioni Flamingo protest-day account.",
+                    note_text,
+                    f"Estimated participation index (not a number of people): {figures}.",
+                ]
+                if related and _valid_url(related):
+                    body.append(f"Related public source: {related}")
+                if livestream:
+                    body.append(f"Livestream: {livestream}")
+                document = _base_document(
+                    source,
+                    relative_path,
+                    title,
+                    "\n\n".join(part for part in body if part),
+                    "protest-day",
+                    sticky_context=(
+                        f"Source: {source.definition.label}\nDocument: {title}\n"
+                        "Reported protest events; participation figures are estimates, "
+                        f"not official headcounts. Index 100 = {anchor}."
+                    ),
+                    legal_status=(
+                        "Published protest-day account; reported actions remain attributed. "
+                        "Participation index is a model estimate, not an official attendance count."
+                    ),
+                    metadata={
+                        "record_id": f"pulsi-day-{day}",
+                        "section": "day",
+                        "protest_day": day,
+                        "protest_date": iso_date,
+                        "event_date": iso_date,
+                        "source_kind": "protest-day",
+                        "parser_format": "participation_days/1",
+                        "livestream_url": livestream,
+                        "source_urls": [
+                            url for url in (related, livestream) if url and _valid_url(url)
+                        ],
+                    },
+                    identity_suffix=f"day-{day}-{language}",
+                )
+                daily_documents.append(document.model_copy(update={"language": language}))
 
     if not index_lines:
         raise ValueError("The participation series is empty")
@@ -390,7 +444,7 @@ def _parse_participation(
             "\n\n".join(event_paragraphs),
         ),
     )
-    return [
+    summaries = [
         _base_document(
             source,
             relative_path,
@@ -403,8 +457,89 @@ def _parse_participation(
             identity_suffix=suffix,
         )
         for suffix, title, text in sections
-        if text.strip()
+        if text.strip() and (suffix != "days" or rule.parser != "participation_days")
     ]
+    return summaries + daily_documents
+
+
+def _parse_research(source: ResolvedSource, path: Path) -> list[SourceDocument]:
+    relative_path = path.relative_to(source.repository_path).as_posix()
+    documents = []
+    for evidence in read_research_evidence(path):
+        document = _base_document(
+            source,
+            relative_path,
+            evidence.title,
+            evidence.text,
+            "research-summary",
+            canonical_url=evidence.url,
+            sticky_context=(
+                f"Source: {source.definition.label}\nDocument: {evidence.title}\n"
+                "Author's summary of public reporting, with attribution and source limitations."
+            ),
+            legal_status=(
+                "Research summary of public reporting, not independent corroboration. "
+                "Allegations and official positions remain attributed; "
+                "proceedings are not convictions. "
+                "Reported crowd figures are not verified unique attendance."
+            ),
+            metadata=evidence.metadata,
+            identity_suffix=evidence.url,
+        )
+        documents.append(document.model_copy(update={"revision": evidence.revision}))
+    return documents
+
+
+def _parse_lapsi_references(source: ResolvedSource, path: Path) -> list[SourceDocument]:
+    relative_path = path.relative_to(source.repository_path).as_posix()
+    documents = []
+    for article in read_reference_index(path).articles:
+        publication = article.published_at
+        sticky = (
+            f"Publisher: Lapsi.al\nArticle: {article.title}\n"
+            f"Publication timestamp: {publication}; not an established incident date.\n"
+            "Reference only: publisher-provided introduction, not the full article."
+        )
+        text = (
+            f"{article.title}\n\nPublisher-provided short introduction:\n"
+            f"{article.publisher_excerpt}\n\n"
+            f"Author/byline: {article.author}. Section: {article.section or 'Not specified'}.\n"
+            "Open the cited original article for its full account. "
+            "This reference is not independent corroboration of republished reporting."
+        )
+        document = _base_document(
+            source, relative_path, article.title, text, "article-reference",
+            canonical_url=article.url,
+            sticky_context=sticky,
+            legal_status=(
+                "Publisher-provided article reference, not independently verified findings. "
+                "Claims remain attributed and a publication date is not an incident date."
+            ),
+            metadata={
+                "record_id": f"lapsi:{article.key}",
+                "parser_format": "lapsi-reference/1",
+                "source_kind": "lapsi-reference",
+                "content_use": "reference",
+                "evidence_access": "publisher_metadata",
+                "published_at": publication,
+                "published_date": publication[:10],
+                "modified_at": article.modified_at,
+                "captured_at": article.captured_at,
+                "author": article.author,
+                "section": article.section,
+                "topics": article.topics,
+                "relevance_score": article.relevance_score,
+                "aliases": article.aliases,
+                "policy_url": article.policy_url,
+                "excerpt_kind": article.excerpt_kind,
+                "article_genre": (
+                    "opinion" if article.section.casefold() in {"ide", "blog"} else "reporting"
+                ),
+            },
+            identity_suffix=article.key,
+        )
+        documents.append(document.model_copy(update={"revision": article.revision}))
+    return documents
 
 
 def _strip_markdown(raw: str) -> tuple[str, dict[str, Any]]:
@@ -921,8 +1056,12 @@ def parse_sources(
                 try:
                     if rule.parser == "dossier_csv":
                         documents.extend(_parse_dossier(source, path, rule))
-                    elif rule.parser == "participation_ts":
+                    elif rule.parser in {"participation_ts", "participation_days"}:
                         documents.extend(_parse_participation(source, path, rule))
+                    elif rule.parser == "protest_research":
+                        documents.extend(_parse_research(source, path))
+                    elif rule.parser == "lapsi_reference":
+                        documents.extend(_parse_lapsi_references(source, path))
                     elif rule.parser == "map_json":
                         documents.extend(_parse_map_locations(source, path))
                     else:
@@ -945,5 +1084,14 @@ def parse_sources(
                             reason=f"{type(exc).__name__}: {exc}",
                         )
                     )
+        if source.definition.versioning == "content_hash":
+            if content_revision(source.repository_path, source.definition) != source.revision:
+                issues.append(
+                    IngestionIssue(
+                        source_id=source.definition.id,
+                        relative_path="local-source/",
+                        reason="Source files changed during parsing; rerun ingestion",
+                    )
+                )
     documents.sort(key=lambda item: (item.source_id, item.relative_path, item.document_id))
     return documents, issues, discovered_files

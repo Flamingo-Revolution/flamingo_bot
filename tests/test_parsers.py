@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from flamingo_bot.chunking import SemanticChunker
 from flamingo_bot.parsers import parse_sources
 from flamingo_bot.sources import ResolvedSource, SourceDefinition, SourceRule
 
@@ -93,11 +94,11 @@ def test_public_text_markdown_and_typescript_are_extracted() -> None:
     assert "diaspora comes home" in by_path["lib/content.ts"].text
 
 
-def participation_source() -> ResolvedSource:
+def participation_source(parser: str = "participation_ts") -> ResolvedSource:
     return resolved_source(
         "diaspora-zbarkon",
         FIXTURES / "diaspora-zbarkon",
-        [SourceRule(parser="participation_ts", include=["data/participation.ts"])],
+        [SourceRule(parser=parser, include=["data/participation.ts"])],
         "https://www.diaspora-zbarkon.com/",
     )
 
@@ -188,6 +189,45 @@ def test_participation_parser_fails_loudly_on_a_missing_anchor(tmp_path: Path) -
     assert documents == []
     assert len(issues) == 1
     assert "NORMALIZATION" in issues[0].reason
+
+
+def test_protest_days_have_distinct_bilingual_event_records_and_provenance() -> None:
+    documents, issues, _ = parse_sources([participation_source("participation_days")])
+
+    assert issues == []
+    days = [document for document in documents if document.content_type == "protest-day"]
+    assert len(days) == 6
+    assert len({document.document_id for document in days}) == 6
+    assert len({document.metadata["record_id"] for document in days}) == 3
+    day_two = next(
+        document
+        for document in days
+        if document.metadata["protest_day"] == 2 and document.language == "en"
+    )
+    assert day_two.metadata["event_date"] == "2026-06-06"
+    assert "The biggest day" in day_two.text
+    assert "Dita më e madhe" not in day_two.text
+    assert "https://example.org/day-two" in day_two.text
+    assert day_two.metadata["livestream_url"].endswith("v=peakStream")
+    assert "not a number of people" in day_two.text
+    assert not any(document.metadata.get("section") == "days" for document in documents)
+    assert {document.metadata["section"] for document in documents} == {
+        "methodology",
+        "index",
+        "events",
+        "day",
+    }
+    for chunk in SemanticChunker().chunk_documents(days):
+        assert chunk.metadata["event_date"] in chunk.text
+        assert "not official headcounts" in chunk.text
+        assert "Day " in chunk.text
+        assert chunk.canonical_url.endswith("/pulsi/")
+    missing = next(
+        document
+        for document in days
+        if document.metadata["protest_day"] == 3 and document.language == "en"
+    )
+    assert "peak not published, mean not published, median not published" in missing.text
 
 
 def test_draft_markdown_is_skipped(tmp_path: Path) -> None:

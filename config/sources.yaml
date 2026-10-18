@@ -58,14 +58,11 @@ sources:
       - parser: typescript_strings
         include:
           - lib/content.ts
-          # Visitor-facing /pulsi copy, including the bilingual methodology note
-          # and the accuracy caveat shown under the chart.
-          - components/live-tracker-page.tsx
         exclude:
           - data/scandals.ts
-      # Structured series. The generic string extractor drops every figure and
-      # date here, so this file gets a parser that reads the structure.
-      - parser: participation_ts
+      # Structured series, with separate dated records in each published language.
+      # Methodology comes from the series rather than conditional UI labels.
+      - parser: participation_days
         include:
           - data/participation.ts
       # The author's one-time analysis of the Pulsi series.
@@ -74,6 +71,19 @@ sources:
           - pulsi-reddit/*.md
         options:
           root: content/snapshots
+
+  # Keep the existing retrieval ID and repository revision, but cite the guide
+  # itself rather than the homepage. Short contact-directory fields are not
+  # retained by the generic text parser; visitors should check the live guide.
+  - id: diaspora-zbarkon
+    label: Diaspora Zbarkon
+    repository_setting: diaspora_zbarkon_repo
+    language: sq
+    base_url: https://www.diaspora-zbarkon.com/siguria/
+    rules:
+      - parser: typescript_strings
+        include:
+          - lib/safety-content.ts
 
   # Shares the Revolution retrieval filter so the currently deployed service
   # can use map evidence immediately, while keeping its own Git revision.
@@ -87,3 +97,33 @@ sources:
       - parser: map_json
         include:
           - data/locations.json
+
+  # Author research is not a Git checkout. Fingerprint only these source indexes
+  # and ingest their attributed public-report summaries, never local model data.
+  - id: diaspora-zbarkon
+    label: Protest research
+    repository_setting: flamingo_research_dir
+    revision_key: protest-research
+    versioning: content_hash
+    optional: true
+    language: en
+    base_url: https://www.diaspora-zbarkon.com/pulsi/
+    rules:
+      - parser: protest_research
+        include:
+          - research/day_*_sources.json
+
+  # Local expanded references only: title, date and publisher-provided intro.
+  # The collector's checkpoint is deliberately outside this fingerprint.
+  - id: lapsi
+    label: Lapsi.al
+    repository_setting: flamingo_lapsi_dir
+    revision_key: lapsi-references
+    versioning: content_hash
+    optional: true
+    language: sq
+    base_url: https://lapsi.al/
+    rules:
+      - parser: lapsi_reference
+        include:
+          - index.json

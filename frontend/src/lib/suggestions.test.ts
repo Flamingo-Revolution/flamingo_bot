@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { selectSuggestions, suggestionBank } from "./suggestions";
 
 describe("suggested questions", () => {
-  it("contains eleven distinct bilingual questions with compact labels", () => {
-    expect(suggestionBank).toHaveLength(11);
-    expect(new Set(suggestionBank.map((entry) => entry.id)).size).toBe(11);
+  it("contains thirteen distinct bilingual questions with compact labels", () => {
+    expect(suggestionBank).toHaveLength(13);
+    expect(new Set(suggestionBank.map((entry) => entry.id)).size).toBe(13);
     for (const entry of suggestionBank) {
       for (const locale of ["sq", "en"] as const) {
         expect(entry[locale].label.length).toBeLessThanOrEqual(32);
@@ -21,10 +21,21 @@ describe("suggested questions", () => {
     expect(picked.map((entry) => entry.id)).toEqual(["movement", "diaspora"]);
   });
 
-  it("can draw the last entries, including the new protest question", () => {
+  it("can draw the last entry, including the police-response question", () => {
     const picked = selectSuggestions("sq", () => 0.999);
-    expect(picked.map((entry) => entry.id)).toContain("why_protesting");
+    expect(picked.map((entry) => entry.id)).toContain("police_response");
     expect(picked[0].id).not.toBe(picked[1].id);
+  });
+
+  it.each(["sq", "en"])("can draw both recent-event questions in %s", (locale) => {
+    const draws = [0.85, 0.999];
+    const picked = selectSuggestions(locale, () => draws.shift() ?? 0);
+    expect(picked.map((entry) => entry.id)).toEqual(["protest_day_140", "police_response"]);
+    expect(picked.map((entry) => entry.label)).toEqual(
+      locale === "sq"
+        ? ["Çfarë ndodhi më 17 tetor?", "Si reagoi policia?"]
+        : ["What happened on 17 October?", "How did police respond?"],
+    );
   });
 
   it("uses English on English pages and Albanian otherwise", () => {
@@ -39,5 +50,21 @@ describe("suggested questions", () => {
     const entry = suggestionBank.find((suggestion) => suggestion.id === "why_protesting");
     expect(entry?.sq.label).toBe("Pse protestojnë shqiptarët?");
     expect(entry?.sq.question).toBe("Pse protestojnë shqiptarët me Revolucionin Flamingo?");
+  });
+
+  it("preserves the tested event dates and day number in the submitted questions", () => {
+    const day = suggestionBank.find((entry) => entry.id === "protest_day_140");
+    expect(day?.sq.question).toBe("Çfarë ndodhi në ditën 140 të protestës, më 17 tetor 2026?");
+    expect(day?.en.question).toBe(
+      "What happened on protest day 140, 17 October 2026? Answer in English.",
+    );
+
+    const police = suggestionBank.find((entry) => entry.id === "police_response");
+    expect(police?.sq.question).toBe(
+      "Çfarë raportojnë burimet për veprimet e policisë gjatë protestave në Tiranë më 13–17 tetor 2026?",
+    );
+    expect(police?.en.question).toBe(
+      "What do sources report about police actions during the Tirana protests on 13–17 October 2026? Answer in English.",
+    );
   });
 });

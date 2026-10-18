@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -25,6 +26,8 @@ class SourceDefinition(BaseModel):
     label: str
     repository_setting: str
     revision_key: str | None = None
+    versioning: Literal["git", "content_hash"] = "git"
+    optional: bool = False
     language: str
     base_url: str
     rules: list[SourceRule]
@@ -89,6 +92,8 @@ def resolve_sources(settings: Settings, catalog: SourceCatalog) -> list[Resolved
             raise ConfigurationError(f"Unknown repository setting: {definition.repository_setting}")
         configured_path = getattr(settings, definition.repository_setting)
         if configured_path is None:
+            if definition.optional:
+                continue
             variable = definition.repository_setting.upper()
             raise ConfigurationError(f"{variable} is required for ingestion")
         repository_path = configured_path.resolve()
@@ -98,7 +103,11 @@ def resolve_sources(settings: Settings, catalog: SourceCatalog) -> list[Resolved
             ResolvedSource(
                 definition=definition,
                 repository_path=repository_path,
-                revision=repository_revision(repository_path),
+                revision=(
+                    content_revision(repository_path, definition)
+                    if definition.versioning == "content_hash"
+                    else repository_revision(repository_path)
+                ),
             )
         )
     return resolved
@@ -115,3 +124,20 @@ def discover_rule_files(repository_path: Path, rule: SourceRule) -> list[Path]:
             path.resolve() for path in repository_path.glob(pattern) if path.is_file()
         )
     return sorted(discovered - excluded)
+
+
+def content_revision(repository_path: Path, definition: SourceDefinition) -> str:
+    """Version explicitly allowlisted local source files independently of Git."""
+    paths = sorted(
+        {path for rule in definition.rules for path in discover_rule_files(repository_path, rule)}
+    )
+    if not paths:
+        raise SourceValidationError("The configured content-versioned source has no approved files")
+    digest = hashlib.sha256()
+    for path in paths:
+        if not path.is_relative_to(repository_path):
+            raise SourceValidationError("Local source files must stay inside their source root")
+        digest.update(path.relative_to(repository_path).as_posix().encode())
+        digest.update(b"\x00")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()

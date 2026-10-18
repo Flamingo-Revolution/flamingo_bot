@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 
+from flamingo_bot.chunking import SemanticChunker
+from flamingo_bot.config import Settings
 from flamingo_bot.parsers import parse_sources
-from flamingo_bot.sources import ResolvedSource, SourceDefinition, SourceRule
+from flamingo_bot.sources import ResolvedSource, SourceDefinition, SourceRule, load_source_catalog
 from flamingo_bot.web_content import discover_news_urls, extract_main_text
 
 
@@ -98,3 +100,46 @@ def test_news_discovery_and_article_extraction_ignore_navigation() -> None:
     assert "useful factual context" in body
     assert "Ignore this navigation" not in body
     assert "Ignore this script" not in body
+
+
+def test_safety_guidance_is_ingested_with_its_own_public_citation(tmp_path: Path) -> None:
+    guide = tmp_path / "lib" / "safety-content.ts"
+    guide.parent.mkdir()
+    guide.write_text(
+        '// "Private implementation comment that must never become public evidence."\n'
+        'export const guide = {\n'
+        '  title: "Safety at the protest. Know your rights.",\n'
+        '  note: "This material is for practical orientation. For legal advice, ask a lawyer.",\n'
+        '  emergency: "For medical emergencies, call 127 and seek professional assistance.",\n'
+        '  caution: "These community contacts have not been independently verified.",\n'
+        '};\n',
+        encoding="utf-8",
+    )
+    catalog = load_source_catalog(Settings(_env_file=None).source_catalog_path)
+    definition = next(
+        source
+        for source in catalog.sources
+        if any("lib/safety-content.ts" in rule.include for rule in source.rules)
+    )
+    source = ResolvedSource(
+        definition=definition,
+        repository_path=tmp_path.resolve(),
+        revision="a" * 40,
+    )
+
+    documents, issues, discovered = parse_sources([source])
+    chunks = SemanticChunker().chunk_documents(documents)
+
+    assert issues == []
+    assert discovered == 1
+    assert len(documents) == 1
+    assert chunks
+    assert all(chunk.source_id == "diaspora-zbarkon" for chunk in chunks)
+    assert all(
+        chunk.canonical_url == "https://www.diaspora-zbarkon.com/siguria/"
+        for chunk in chunks
+    )
+    assert "For legal advice, ask a lawyer" in documents[0].text
+    assert "call 127" in documents[0].text
+    assert "not been independently verified" in documents[0].text
+    assert "Private implementation comment" not in documents[0].text

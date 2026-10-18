@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     flamingo_revolution_repo: Path | None = None
     diaspora_zbarkon_repo: Path | None = None
     flamingo_map_repo: Path | None = None
+    flamingo_research_dir: Path | None = None
+    flamingo_lapsi_dir: Path | None = None
 
     flamingo_environment: Literal["development", "test", "production"] = "development"
     flamingo_allowed_origins: str = (
@@ -112,6 +114,8 @@ class Settings(BaseSettings):
         "flamingo_revolution_repo",
         "diaspora_zbarkon_repo",
         "flamingo_map_repo",
+        "flamingo_research_dir",
+        "flamingo_lapsi_dir",
         mode="before",
     )
     @classmethod

@@ -5,6 +5,8 @@
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.local
+*.local.md
 __pycache__
 *.pyc
 frontend/node_modules

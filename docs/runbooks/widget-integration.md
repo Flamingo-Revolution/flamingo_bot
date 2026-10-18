@@ -76,11 +76,13 @@ backend answers each question independently again.
 
 ## Suggested questions
 
-An empty chat shows two distinct questions randomly selected from eleven
+An empty chat shows two distinct questions randomly selected from thirteen
 curated, source-tested topics. They disappear after the first question and
 return after **New chat**. Merely displaying them makes no API request; clicking
 one submits it through the normal chat and quota path. The chip uses a short
 label, while the full submitted question is visible in the conversation.
+
+Event-specific starters include explicit dates in the submitted questions.
 
 The host document's `<html lang>` selects English for `en`/`en-*` and Albanian
 otherwise. Set that attribute on an embedded host page; the standalone page

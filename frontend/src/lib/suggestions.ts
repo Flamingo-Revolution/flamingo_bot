@@ -107,6 +107,30 @@ export const suggestionBank: readonly Suggestion[] = [
       question: "Why are Albanians protesting with the Flamingo Revolution? Answer in English.",
     },
   },
+  {
+    id: "protest_day_140",
+    sq: {
+      label: "Çfarë ndodhi më 17 tetor?",
+      question: "Çfarë ndodhi në ditën 140 të protestës, më 17 tetor 2026?",
+    },
+    en: {
+      label: "What happened on 17 October?",
+      question: "What happened on protest day 140, 17 October 2026? Answer in English.",
+    },
+  },
+  {
+    id: "police_response",
+    sq: {
+      label: "Si reagoi policia?",
+      question:
+        "Çfarë raportojnë burimet për veprimet e policisë gjatë protestave në Tiranë më 13–17 tetor 2026?",
+    },
+    en: {
+      label: "How did police respond?",
+      question:
+        "What do sources report about police actions during the Tirana protests on 13–17 October 2026? Answer in English.",
+    },
+  },
 ];
 
 /** Pick two different prompts afresh when an empty chat opens. */

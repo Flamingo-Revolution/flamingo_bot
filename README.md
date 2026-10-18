@@ -118,7 +118,9 @@ resolves the source catalog, then the repository path each catalog entry names.
 | --- | --- | --- |
 | `flamingo-dossier` | `FLAMINGO_DOSSIER_REPO` | `data/dosje.csv`, with entity relations joined from `data/lidhje.csv` |
 | `flamingo-revolution` | `FLAMINGO_REVOLUTION_REPO` | `public/llms.txt`, blog and page Markdown, selected `src/data/*.ts`, public PDFs including Flamingo Times, and published Flamingo News articles fetched from the public site |
-| `diaspora-zbarkon` | `DIASPORA_ZBARKON_REPO` | `specs/Mission.md`, `lib/content.ts`, the /pulsi page copy, and the protest participation series |
+| `diaspora-zbarkon` | `DIASPORA_ZBARKON_REPO` | Mission/content copy, individual bilingual protest-day records, participation methodology/index/events, and public safety guidance citing `/siguria/` |
+| `diaspora-zbarkon` (research) | `FLAMINGO_RESEARCH_DIR` (optional) | `research/day_*_sources.json`: attributed public-report summaries with original article URLs |
+| `lapsi` | `FLAMINGO_LAPSI_DIR` (optional) | Local `index.json`: protest-related article references with publisher-provided short introductions, dates and canonical links |
 | `flamingo-revolution` (map) | `FLAMINGO_MAP_REPO` | `data/locations.json`: one document per city and protest, plus map-wide totals; cites `/harta/` |
 
 The dossier, Revolution, Diaspora, and map content is read from clean local
@@ -138,6 +140,11 @@ Pull the source repository, then re-run ingestion. Ingestion never pulls for
 you, because the SHA it stamps into the manifest has to be a commit that exists
 upstream. Set `GCP_INGESTION_SERVICE_ACCOUNT` in the private operator shell to
 the dedicated ingestion identity before publishing.
+
+Optional research and Lapsi sources use content hashes instead of Git revisions.
+Set their paths privately; raw research and collected references stay outside Git.
+See the [ingestion runbook](docs/runbooks/ingestion.md) for the research allowlist
+and [Lapsi collection workflow](docs/runbooks/ingestion.md#lapsi-references).
 
 ```bash
 git -C /path/to/source-repo pull
@@ -176,7 +183,8 @@ switch need no changes. Four places do.
 2. **`src/flamingo_bot/config.py`**: add an optional `Path` field on `Settings`
    named by that entry's `repository_setting`, add it to the optional-path
    validator, and document the variable in `.env.example`. `resolve_sources()`
-   raises `ConfigurationError` when the field is absent or unset.
+   raises `ConfigurationError` for a missing field or an unset required source.
+   Catalog entries marked `optional: true` are skipped when their setting is unset.
 3. **`src/flamingo_bot/retrieval.py`, `_SOURCE_IDS`**: add the id if it is new.
    The map deliberately shares the Revolution retrieval id while recording its
    own `revision_key`, so it can be retrieved without a Cloud Run redeploy. `retrieve()`
