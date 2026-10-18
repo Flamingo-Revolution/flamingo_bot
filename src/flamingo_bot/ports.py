@@ -12,6 +12,7 @@ from flamingo_bot.models import (
     GenerationManifest,
     RetrievedChunk,
 )
+from flamingo_bot.planning import PassageSelection, SearchPlan
 from flamingo_bot.quota import QuotaDecision
 
 
@@ -29,18 +30,30 @@ class AnswerGenerator(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
-class QueryCondenser(Protocol):
-    async def complete_text(
+class QueryPlanner(Protocol):
+    async def plan_search(
         self,
         *,
         instructions: str,
         prompt: str,
         safety_identifier: str | None,
-    ) -> str: ...
+    ) -> SearchPlan: ...
+
+
+class PassageRanker(Protocol):
+    async def select_passages(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> PassageSelection: ...
 
 
 class VectorStore(Protocol):
     async def status(self) -> dict[str, object]: ...
+
+    async def active_generation(self) -> str | None: ...
 
     async def search(
         self,
@@ -49,6 +62,15 @@ class VectorStore(Protocol):
         limit: int,
         distance_threshold: float,
         source_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> list[RetrievedChunk]: ...
+
+    async def metadata_passages(
+        self,
+        plan: SearchPlan,
+        vectors: Sequence[Sequence[float]],
+        *,
+        generation_id: str,
     ) -> list[RetrievedChunk]: ...
 
 

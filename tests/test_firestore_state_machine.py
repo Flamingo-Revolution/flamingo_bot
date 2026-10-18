@@ -50,7 +50,7 @@ class FakeQuery:
 
 
 class FakeVectorQuery(FakeQuery):
-    def get(self, timeout: int | None = None) -> list[FakeSnapshot]:
+    def get(self, timeout: int | None = None, **kwargs: Any) -> list[FakeSnapshot]:
         if not self.client.vector_smoke_succeeds:
             return []
         return self.stream(timeout)[:1]

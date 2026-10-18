@@ -9,8 +9,16 @@ from flamingo_bot.errors import ConfigurationError
 def test_model_config_contains_only_selected_contracts() -> None:
     config = load_model_config(Path("openai.yaml"))
 
-    assert config.chat.deployment == "gpt-5.6-luna"
-    assert config.chat.reasoning_effort == "medium"
+    assert config.chat.deployment == "gpt-6.1-sol"
+    assert config.chat.reasoning_effort == "low"
+    assert config.condense.deployment == "gpt-6-luna"
+    assert config.condense.reasoning_effort == "none"
+    assert config.condense.timeout_seconds == 20
+    assert config.condense.max_output_tokens == 800
+    assert config.condense.text_verbosity == "low"
+    assert config.rerank.deployment == "gpt-5.6-luna"
+    assert config.rerank.reasoning_effort == "none"
+    assert config.rerank.max_output_tokens == 400
     assert config.embedding.deployment == "text-embedding-3-large"
     assert config.embedding.dimensions == 1024
 

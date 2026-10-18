@@ -1,22 +1,23 @@
 import asyncio
+import json
 from datetime import date
+from typing import Any
+
+import pytest
 
 from flamingo_bot.config import Settings
 from flamingo_bot.errors import ProviderError
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
+from flamingo_bot.planning import SearchPlan
 from flamingo_bot.prompting import SYSTEM_INSTRUCTIONS, build_grounded_prompt
 from flamingo_bot.providers.memory import (
     HashEmbedder,
     InMemoryVectorStore,
     ScriptedAnswerGenerator,
-    ScriptedCondenser,
+    ScriptedPlanner,
+    ScriptedRanker,
 )
-from flamingo_bot.retrieval import (
-    ChatService,
-    contextualize_protest_query,
-    diversify,
-    no_evidence_message,
-)
+from flamingo_bot.retrieval import ChatService, diversify, no_evidence_message
 
 
 def record(chunk_id: str, source_id: str, title: str, distance: float = 0.1) -> RetrievedChunk:
@@ -72,51 +73,6 @@ def test_research_access_limitations_reach_the_answer_prompt() -> None:
     prompt = build_grounded_prompt("Did the protest turn violent?", [research])
     assert "Research page-access record: not_recorded" in prompt
     assert "original page was not re-fetched" in prompt
-
-
-def test_retrieval_can_reach_events_beyond_three_duplicate_candidates() -> None:
-    async def scenario() -> None:
-        embedder = HashEmbedder()
-        vector = (
-            await embedder.embed_texts(
-                [contextualize_protest_query("Did the protest turn violent?")]
-            )
-        )[0]
-        records = [
-            (record(str(index), "diaspora-zbarkon", "Old long document"), vector)
-            for index in range(3)
-        ]
-        records.append((record("day136", "diaspora-zbarkon", "Day 136 escalation"), vector))
-        service = ChatService(
-            settings=Settings(_env_file=None),
-            embedder=embedder,
-            vector_store=InMemoryVectorStore(records),
-            answer_generator=ScriptedAnswerGenerator("unused"),
-        )
-        selected = await service.retrieve("Did the protest turn violent?")
-        assert "day136" in {hit.chunk_id for hit in selected}
-        assert len(selected) <= 7
-
-    asyncio.run(scenario())
-
-
-def test_generic_escalation_questions_gain_current_movement_context_in_both_languages() -> None:
-    for question in ("Did the protest turn violent?", "A u bë e dhunshme protesta?"):
-        query = contextualize_protest_query(question, today=date(2026, 10, 18))
-        assert query.endswith(question)
-        assert "Flamingo Revolution protests in Albania" in query
-        assert "October 2026" in query
-        assert "police actions" in query
-
-
-def test_named_places_dates_and_unrelated_questions_keep_their_original_scope() -> None:
-    for question in (
-        "Did the protest in Vienna turn violent?",
-        "Did the protest turn violent in June 2026?",
-        "A pati dhunë në ditën 31 të protestës?",
-        "What is the Flamingo Revolution?",
-    ):
-        assert contextualize_protest_query(question) == question
 
 
 def test_recency_preference_is_bounded_and_does_not_change_recorded_distances() -> None:
@@ -211,151 +167,6 @@ def test_no_evidence_message_says_what_the_assistant_covers() -> None:
         assert "\n\n" in message
 
 
-def test_no_evidence_language_follows_the_visitor_not_the_condensed_query() -> None:
-    """The condensed query is a retrieval artefact and must not pick the language."""
-
-    async def scenario() -> None:
-        condenser = ScriptedCondenser("Explain the Flamingo Revolution in two sentences.")
-        generator = ScriptedAnswerGenerator("must not be used")
-        service = ChatService(
-            settings=Settings(_env_file=None),
-            embedder=HashEmbedder(),
-            vector_store=InMemoryVectorStore(),
-            answer_generator=generator,
-            query_condenser=condenser,
-        )
-
-        _, stream = await service.stream("Po skandalet e kësaj qeverie?", history=history_pair())
-        answer = "".join([piece async for piece in stream])
-
-        assert answer.startswith("Nuk gjeta prova")
-        assert generator.calls == []
-
-    asyncio.run(scenario())
-
-
-async def follow_up_service(
-    condenser: ScriptedCondenser | None,
-    generator: ScriptedAnswerGenerator,
-    *,
-    history_turns: int = 6,
-) -> ChatService:
-    embedder = HashEmbedder()
-    vector = (await embedder.embed_texts(["Revolucioni Flamingo"]))[0]
-    chunk = record("about", "flamingo-revolution", "About the movement")
-    return ChatService(
-        settings=Settings(
-            _env_file=None,
-            flamingo_relevance_distance_threshold=0.9,
-            flamingo_history_turns=history_turns,
-        ),
-        embedder=embedder,
-        vector_store=InMemoryVectorStore([(chunk, vector)]),
-        answer_generator=generator,
-        query_condenser=condenser,
-    )
-
-
-def history_pair() -> list[ConversationTurn]:
-    return [
-        ConversationTurn(role="user", text="Çfarë është Revolucioni Flamingo?"),
-        ConversationTurn(role="assistant", text="Një lëvizje qytetare [S1]."),
-    ]
-
-
-def test_first_question_skips_condensation() -> None:
-    async def scenario() -> None:
-        condenser = ScriptedCondenser("must not be used")
-        service = await follow_up_service(condenser, ScriptedAnswerGenerator("Answer [S1]."))
-
-        await service.stream("Çfarë është Revolucioni Flamingo?")
-
-        assert condenser.calls == []
-
-    asyncio.run(scenario())
-
-
-def test_follow_up_is_condensed_before_retrieval_and_transcript_reaches_the_prompt() -> None:
-    async def scenario() -> None:
-        condenser = ScriptedCondenser("Shpjego Revolucionin Flamingo në dy fjali.")
-        generator = ScriptedAnswerGenerator("Answer [S1].")
-        service = await follow_up_service(condenser, generator)
-
-        citations, stream = await service.stream("Ma thuaji në 2 fjali", history=history_pair())
-        answer = "".join([piece async for piece in stream])
-
-        assert answer.strip() == "Answer [S1]."
-        assert citations[0].id == "S1"
-        assert len(condenser.calls) == 1
-        assert "Ma thuaji në 2 fjali" in str(condenser.calls[0]["prompt"])
-        prompt = str(generator.calls[0]["prompt"])
-        assert "<conversation>" in prompt
-        assert "Visitor: Çfarë është Revolucioni Flamingo?" in prompt
-        assert "Visitor question:\nMa thuaji në 2 fjali" in prompt
-
-    asyncio.run(scenario())
-
-
-def test_replayed_answer_reaches_the_prompt_without_stale_markers() -> None:
-    async def scenario() -> None:
-        generator = ScriptedAnswerGenerator("Answer [S1].")
-        service = await follow_up_service(ScriptedCondenser("Revolucioni Flamingo"), generator)
-
-        _, stream = await service.stream("Ma thuaji në 2 fjali", history=history_pair())
-        assert [piece async for piece in stream]
-
-        prompt = str(generator.calls[0]["prompt"])
-        assert "Assistant: Një lëvizje qytetare ." in prompt
-        assert "[S1]" not in prompt.split("Visitor question:")[0]
-
-    asyncio.run(scenario())
-
-
-def test_condensation_failure_falls_back_to_a_deterministic_query() -> None:
-    async def scenario() -> None:
-        condenser = ScriptedCondenser(error=ProviderError("condenser unavailable"))
-        generator = ScriptedAnswerGenerator("Answer [S1].")
-        service = await follow_up_service(condenser, generator)
-
-        citations, stream = await service.stream("Ma thuaji në 2 fjali", history=history_pair())
-        answer = "".join([piece async for piece in stream])
-
-        assert answer.strip() == "Answer [S1]."
-        assert len(citations) == 1
-        assert len(condenser.calls) == 1
-
-    asyncio.run(scenario())
-
-
-def test_unusable_condensation_output_falls_back_without_failing_the_request() -> None:
-    async def scenario() -> None:
-        condenser = ScriptedCondenser("   ")
-        service = await follow_up_service(condenser, ScriptedAnswerGenerator("Answer [S1]."))
-
-        citations, _ = await service.stream("Ma thuaji në 2 fjali", history=history_pair())
-
-        assert len(citations) == 1
-
-    asyncio.run(scenario())
-
-
-def test_disabled_history_ignores_replayed_turns() -> None:
-    async def scenario() -> None:
-        condenser = ScriptedCondenser("must not be used")
-        generator = ScriptedAnswerGenerator("Answer [S1].")
-        service = await follow_up_service(condenser, generator, history_turns=0)
-
-        _, stream = await service.stream(
-            "Çfarë është Revolucioni Flamingo?", history=history_pair()
-        )
-        assert [piece async for piece in stream]
-
-        assert condenser.calls == []
-        assert "<conversation>" not in str(generator.calls[0]["prompt"])
-
-    asyncio.run(scenario())
-
-
 def test_retrieval_queries_each_source_and_returns_diversified_results() -> None:
     async def scenario() -> None:
         embedder = HashEmbedder()
@@ -392,3 +203,247 @@ def test_system_instructions_describe_the_assistant_scope() -> None:
         "what you can help with",
     ):
         assert phrase in SYSTEM_INSTRUCTIONS
+
+
+def plan_for(question: str, **updates: Any) -> SearchPlan:
+    return SearchPlan.fallback(question).model_copy(update=updates)
+
+
+class RecordingEmbedder:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def embed_texts(self, texts: Any) -> list[list[float]]:
+        self.queries.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+
+def history_pair() -> list[ConversationTurn]:
+    return [
+        ConversationTurn(role="user", text="Cila ishte dita më e madhe sipas indeksit Pulsi?"),
+        ConversationTurn(role="assistant", text="20 qershor 2026, indeksi 100 [S1]."),
+    ]
+
+
+def service_for(
+    planner: ScriptedPlanner | None = None,
+    ranker: ScriptedRanker | None = None,
+    store: InMemoryVectorStore | None = None,
+    *,
+    history_turns: int = 6,
+) -> tuple[ChatService, RecordingEmbedder, ScriptedAnswerGenerator]:
+    embedder = RecordingEmbedder()
+    generator = ScriptedAnswerGenerator("A grounded answer [S1].")
+    if store is None:
+        store = InMemoryVectorStore(
+            [
+                (record("index", "diaspora-zbarkon", "Pulsi participation index"), [1.0, 0.0]),
+                (record("october", "diaspora-zbarkon", "October escalation report"), [0.9, 0.1]),
+            ]
+        )
+    return (
+        ChatService(
+            settings=Settings(_env_file=None, flamingo_history_turns=history_turns),
+            embedder=embedder,
+            vector_store=store,
+            answer_generator=generator,
+            query_planner=planner,
+            passage_ranker=ranker,
+        ),
+        embedder,
+        generator,
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_question_gets_typed_planning_for_exact_aggregate_lookups() -> None:
+    planner = ScriptedPlanner(plan_for("Pulsi peak", participation_section="index"))
+    service, _, _ = service_for(planner)
+    await service.stream("Cila ishte dita më e madhe sipas indeksit Pulsi?")
+    assert len(planner.calls) == 1
+    assert "Maximum queries: 2" in str(planner.calls[0]["prompt"])
+    assert "do not bind the new aspect" in str(planner.calls[0]["instructions"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question", ["Pse u be e dhunshme kaq papritur", "Why did it turn violent so suddenly?"]
+)
+async def test_attendance_followup_retrieves_escalation_not_the_participation_peak(
+    question: str,
+) -> None:
+    planner = ScriptedPlanner(
+        plan_for(
+            "If referring to recent escalation",
+            queries=["recent protest escalation", "diluted query"],
+            intent="escalation",
+            recent=True,
+        )
+    )
+    ranker = ScriptedRanker(["C2"])
+    service, embedder, generator = service_for(planner, ranker)
+    citations, stream = await service.stream(question, history=history_pair())
+    assert [part async for part in stream]
+    assert [citation.title for citation in citations] == ["October escalation report"]
+    assert len(embedder.queries) == 2
+    assert embedder.queries[-1].endswith(question)
+    assert "diluted query" not in " ".join(embedder.queries)
+    ranking = json.loads(str(ranker.calls[0]["prompt"]))
+    assert ranking["question"] == question
+    prompt = str(generator.calls[0]["prompt"])
+    assert "If referring to recent Flamingo escalation" in prompt
+    assert "Visitor question:\n" + question in prompt
+    assert "Assistant: 20 qershor 2026, indeksi 100 ." in prompt
+    assert "Pulsi participation index" not in prompt.split("Evidence blocks:")[1]
+
+
+@pytest.mark.asyncio
+async def test_explicit_historical_and_foreign_scope_disables_recency_expansion() -> None:
+    planner = ScriptedPlanner(
+        plan_for(
+            "Violence at the Melbourne rally on 13 June 2026",
+            dates=["2026-06-13"],
+            recent=True,
+        )
+    )
+    service, embedder, _ = service_for(planner)
+    plan = await service.plan_question(
+        "Was that Melbourne rally violent?", [], as_of=date(2026, 10, 18)
+    )
+    assert plan.recent is False
+    await service.retrieve(plan, as_of=date(2026, 10, 18))
+    assert all("October" not in query for query in embedder.queries)
+
+
+@pytest.mark.asyncio
+async def test_planner_failure_uses_latest_question_without_appending_old_subject(
+    caplog: Any,
+) -> None:
+    planner = ScriptedPlanner(error=ProviderError("secret provider payload"))
+    service, _, _ = service_for(planner)
+    plan = await service.plan_question(
+        "Po Aeroporti i Vlorës?", history_pair(), as_of=date(2026, 10, 18)
+    )
+    assert plan.queries == ["Po Aeroporti i Vlorës?"]
+    assert "Pulsi" not in plan.standalone
+    assert "planner_fallback" in caplog.text
+    assert "secret provider payload" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_disabled_memory_still_plans_but_does_not_replay_history() -> None:
+    planner = ScriptedPlanner()
+    service, _, generator = service_for(planner, history_turns=0)
+    _, stream = await service.stream("What is Flamingo Revolution?", history=history_pair())
+    assert [part async for part in stream]
+    assert "20 qershor" not in str(planner.calls[0]["prompt"])
+    assert "<conversation>" not in str(generator.calls[0]["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_no_evidence_language_uses_the_original_visitor_question() -> None:
+    service, _, generator = service_for(
+        ScriptedPlanner(plan_for("English interpretation")),
+        store=InMemoryVectorStore(),
+    )
+    _, stream = await service.stream("Po skandalet e kësaj qeverie?", history=history_pair())
+    assert "".join([part async for part in stream]).startswith("Nuk gjeta prova")
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [["C999"], ["C1", "C1"]])
+async def test_invalid_ranking_falls_back_visibly_without_inventing_passages(
+    selected: list[str], caplog: Any
+) -> None:
+    service, _, _ = service_for(ranker=ScriptedRanker(selected))
+    citations, _ = await service.stream("Explain the protests")
+    assert len(citations) == 2
+    assert "reranker_fallback" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_valid_empty_ranking_does_not_call_answer_model() -> None:
+    service, _, generator = service_for(ranker=ScriptedRanker([]))
+    citations, stream = await service.stream("Unrelated topic")
+    assert citations == []
+    assert "could not find enough" in "".join([part async for part in stream])
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ranking_pool_and_final_context_are_bounded() -> None:
+    records = [
+        (record(f"{source}-{index}", source, f"Document {source} {index}"), [1.0, 0.0])
+        for source in ("flamingo-dossier", "flamingo-revolution", "diaspora-zbarkon", "lapsi")
+        for index in range(10)
+    ]
+    ranker = ScriptedRanker([f"C{index}" for index in range(1, 8)])
+    service, _, _ = service_for(ranker=ranker, store=InMemoryVectorStore(records))
+    citations, _ = await service.stream("Explain the protests")
+    assert len(citations) == 7
+    assert len(json.loads(str(ranker.calls[0]["prompt"]))["passages"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_exact_metadata_anchors_can_recover_a_relevant_low_similarity_record() -> None:
+    anchor = record("day139", "diaspora-zbarkon", "Day 139").model_copy(
+        update={"metadata": {"protest_day": 139, "event_date": "2026-10-16"}},
+    )
+    store = InMemoryVectorStore([(anchor, [0.0, 1.0])])
+    planner = ScriptedPlanner(plan_for("Previous day", dates=["2026-10-16"], protest_days=[139]))
+    service, _, _ = service_for(planner, ScriptedRanker(["C1"]), store)
+    citations, _ = await service.stream("What about the previous day?", history=history_pair())
+    assert [item.title for item in citations] == ["Day 139"]
+
+
+@pytest.mark.asyncio
+async def test_all_searches_pin_one_generation_for_the_entire_request() -> None:
+    class ChangingStore(InMemoryVectorStore):
+        def __init__(self, records: Any) -> None:
+            super().__init__(records)
+            self.reads = 0
+            self.generations: list[str | None] = []
+
+        async def active_generation(self) -> str:
+            self.reads += 1
+            return f"generation-{self.reads}"
+
+        async def search(self, vector: Any, **kwargs: Any) -> list[RetrievedChunk]:
+            self.generations.append(kwargs["generation_id"])
+            return await super().search(vector, **kwargs)
+
+        async def metadata_passages(
+            self, plan: Any, vectors: Any, *, generation_id: str
+        ) -> list[RetrievedChunk]:
+            self.generations.append(generation_id)
+            return []
+
+    store = ChangingStore([(record("index", "diaspora-zbarkon", "Index"), [1.0, 0.0])])
+    service, _, _ = service_for(
+        ScriptedPlanner(plan_for("Peak", participation_section="index")),
+        store=store,
+    )
+    await service.stream("Peak participation?")
+    assert store.reads == 1
+    assert set(store.generations) == {"generation-1"}
+
+
+@pytest.mark.asyncio
+async def test_metadata_failure_keeps_vector_evidence_and_does_not_log_question(
+    caplog: Any,
+) -> None:
+    class BrokenMetadataStore(InMemoryVectorStore):
+        async def metadata_passages(self, *args: Any, **kwargs: Any) -> list[RetrievedChunk]:
+            raise ProviderError("private provider detail")
+
+    store = BrokenMetadataStore([(record("index", "diaspora-zbarkon", "Index"), [1.0, 0.0])])
+    service, _, _ = service_for(
+        ScriptedPlanner(plan_for("Peak", participation_section="index")),
+        store=store,
+    )
+    citations, _ = await service.stream("private visitor question")
+    assert citations
+    assert "metadata_anchor_fallback" in caplog.text
+    assert "private provider detail" not in caplog.text
+    assert "private visitor question" not in caplog.text

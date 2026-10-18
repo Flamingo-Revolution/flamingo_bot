@@ -3,7 +3,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.run_evals import UNSUPPORTED_MARKDOWN, load_cases, load_history, parse_sse
+from scripts.run_evals import (
+    UNSUPPORTED_MARKDOWN,
+    ConversationTurn,
+    EvalCase,
+    EvalResult,
+    load_cases,
+    load_history,
+    parse_sse,
+    run_conversation,
+)
 
 
 def test_versioned_evaluation_cases_cover_required_risks() -> None:
@@ -100,3 +109,41 @@ def test_evaluation_sse_parser_preserves_event_contract() -> None:
 
     assert [name for name, _ in events] == ["citation", "delta", "done"]
     assert events[1][1]["text"] == "Answer [S1]."
+
+
+def test_multiturn_api_regressions_keep_the_original_topic_switches() -> None:
+    cases = load_cases(Path("evals/conversations.yaml"))
+    assert len(cases) == 18
+    assert sum(len(case.turns) for case in cases) == 72
+    original = next(case for case in cases if case.id == "pulsi-escalation-sq")
+    assert original.turns[1].question == "Pse u be e dhunshme kaq papritur"
+    assert "21/2024" in original.turns[4].question
+    assert original.turns[-1].max_sentences == 2
+
+
+def test_conversation_runner_replays_its_actual_answers_with_widget_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.run_evals as runner
+
+    histories: list[tuple[ConversationTurn, ...]] = []
+
+    def request(case: EvalCase, *args: object) -> tuple[EvalResult, str]:
+        histories.append(case.history)
+        return EvalResult(id=case.id), "actual generated answer " + "x" * 1500
+
+    monkeypatch.setattr(runner, "_run_turn", request)
+    case = EvalCase(
+        id="conversation",
+        turns=tuple(
+            EvalCase(id=f"turn-{index}", question=f"question-{index}") for index in range(8)
+        ),
+    )
+    results = run_conversation(case, "http://localhost:8012", "http://localhost:5173", 1)
+    assert len(results) == 8
+    assert histories[0] == ()
+    assert histories[1][-1].text.startswith("actual generated answer")
+    assert all(
+        len(history) <= 6 and sum(len(turn.text) for turn in history) <= 4000
+        for history in histories
+    )

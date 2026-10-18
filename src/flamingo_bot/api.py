@@ -31,7 +31,8 @@ from flamingo_bot.ports import (
     AnswerGenerator,
     ClosableProvider,
     Embedder,
-    QueryCondenser,
+    PassageRanker,
+    QueryPlanner,
     RequestQuota,
     VectorStore,
 )
@@ -56,7 +57,8 @@ class ServiceBundle:
     embedder: Embedder
     vector_store: VectorStore
     answer_generator: AnswerGenerator
-    query_condenser: QueryCondenser | None = None
+    query_planner: QueryPlanner | None = None
+    passage_ranker: PassageRanker | None = None
     request_quota: RequestQuota | None = None
     closables: tuple[ClosableProvider, ...] = ()
 
@@ -210,7 +212,8 @@ def create_app(
                 embedder=model_provider,
                 vector_store=vector_store,
                 answer_generator=model_provider,
-                query_condenser=model_provider,
+                query_planner=model_provider,
+                passage_ranker=model_provider,
                 request_quota=request_quota,
                 closables=(model_provider, vector_store, request_quota),
             )
@@ -222,7 +225,8 @@ def create_app(
             embedder=bundle.embedder,
             vector_store=bundle.vector_store,
             answer_generator=bundle.answer_generator,
-            query_condenser=bundle.query_condenser,
+            query_planner=bundle.query_planner,
+            passage_ranker=bundle.passage_ranker,
         )
         app.state.chat_semaphore = asyncio.Semaphore(runtime_settings.flamingo_chat_concurrency)
         app.state.rate_limiter = RateLimiter(

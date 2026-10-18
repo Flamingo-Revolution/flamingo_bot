@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from flamingo_bot.conversation import render_transcript
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
 
-PROMPT_VERSION = "1.6.0"
+PROMPT_VERSION = "1.7.0"
 
 SYSTEM_INSTRUCTIONS = """You are the independent Flamingo Revolution information assistant.
 
@@ -79,7 +79,8 @@ def build_grounded_prompt(
         access_note = (
             f"Research page-access record: {access}. This describes the author's research; "
             "the original page was not re-fetched during ingestion."
-            if access else ""
+            if access
+            else ""
         )
         if chunk.metadata.get("content_use") == "reference":
             access_note = (

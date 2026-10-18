@@ -2,15 +2,13 @@
 
 Flamingo Bot is an independent, source-grounded RAG assistant for Flamingo
 Revolution, its protest map, Flamingo News, and Diaspora Zbarkon. It uses
-versioned content, Azure embeddings and Luna responses, Firestore Vector Search,
+versioned content, Azure embeddings and Sol responses, Firestore Vector Search,
 a FastAPI SSE service,
 and an embeddable Svelte custom element.
 
-The dedicated GCP data plane, localhost application, and production Cloud Run
-service are verified end to end. Firestore generation
-`20260924T155907Z-278566f3e1c0` is active in Frankfurt with 1,549 source-grounded
-chunks. Local and production APIs have passed the full live evaluation suite,
-and the production widget bundle is available for host-site integration.
+The data plane uses Firestore in Frankfurt. The active generation and readiness
+are reported by `/status`; model and backend changes require a separate Cloud
+Run deployment before they affect production.
 
 ## Architecture
 
@@ -19,19 +17,20 @@ local source repos -> Python parse/chunk/diff -> Azure embeddings
                                             -> staged Firestore generation
                                             -> active pointer
 
-visitor -> <flamingo-chat> -> FastAPI SSE -> Firestore cosine search
-                                         -> Azure gpt-5.6-luna
-                                         -> cited streamed answer
+visitor -> <flamingo-chat> -> FastAPI SSE -> GPT-6 Luna query plan
+                                         -> Firestore vectors + exact anchors
+                                         -> GPT-5.6 Luna passage selection
+                                         -> GPT-6.1 Sol cited streamed answer
 ```
 
 There is no LangChain, LangGraph, ChromaDB, live request-time crawler, or second
 local vector database. Unit tests use non-billable in-memory fakes; local and
 production retrieval use the same named Firestore database.
 
-Live retrieval uses a base vector index plus a `source_id`-filtered vector index
-to prevent a larger source from dominating cross-source questions. At most three
-hits per source are considered and no more than seven diversified chunks reach
-Luna.
+Live retrieval combines the original question with a contextualized search,
+source-filtered vector queries and bounded metadata anchors. All reads in one
+request use the same published generation. At most 20 candidates are ranked,
+and no more than seven relevant passages reach Sol.
 
 Answers use a small Markdown subset: paragraphs, bullet and numbered lists,
 bold, and italic. The prompt allows nothing else and the widget renders exactly
@@ -50,9 +49,14 @@ transcript.
 Replayed turns are treated as unverified client input, never as evidence. They
 are capped by `FLAMINGO_HISTORY_TURNS` (default 6) and `FLAMINGO_HISTORY_CHARS`
 (default 4,000), stale `[S1]`-style markers are stripped from them, and
-`FLAMINGO_HISTORY_TURNS=0` disables the feature. When turns are present a short
-`condense` model call rewrites the question into a standalone search query, with
-a deterministic fallback so this step can never fail a chat request.
+`FLAMINGO_HISTORY_TURNS=0` disables memory without disabling query planning.
+Every request receives a typed intent/source/date plan, while the original
+question remains an independent retrieval route. If planning fails, retrieval
+uses the latest question alone instead of attaching it to the previous topic.
+The configuration uses GPT-6 Luna `none` for planning, GPT-5.6 Luna `none` for
+passage selection, and GPT-6.1 Sol `low` for answers.
+Embeddings remain `text-embedding-3-large` with 1,024 dimensions; changing the
+rewrite model does not require re-ingestion.
 
 ## Requirements
 

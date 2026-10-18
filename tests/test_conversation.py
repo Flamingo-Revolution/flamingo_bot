@@ -1,7 +1,4 @@
 from flamingo_bot.conversation import (
-    accept_condensed_query,
-    build_condense_prompt,
-    fallback_search_query,
     normalize_history,
     render_transcript,
     strip_citation_markers,
@@ -71,40 +68,3 @@ def test_transcript_labels_the_visitor_and_the_assistant() -> None:
     transcript = render_transcript([turn("user", "Pyetja"), turn("assistant", "Përgjigjja")])
 
     assert transcript == "Visitor: Pyetja\nAssistant: Përgjigjja"
-
-
-def test_condense_prompt_delimits_the_untrusted_transcript() -> None:
-    prompt = build_condense_prompt("Ma thuaj shkurt.", [turn("user", "Pyetja e parë")])
-
-    assert "<conversation>" in prompt
-    assert "</conversation>" in prompt
-    assert prompt.rstrip().endswith("Standalone search query:")
-    assert "Latest visitor message:\nMa thuaj shkurt." in prompt
-
-
-def test_fallback_query_carries_the_previous_visitor_question() -> None:
-    turns = [
-        turn("user", "Çfarë është Revolucioni Flamingo?"),
-        turn("assistant", "Një lëvizje qytetare."),
-    ]
-
-    assert (
-        fallback_search_query("Ma thuaj shkurt.", turns)
-        == "Çfarë është Revolucioni Flamingo? Ma thuaj shkurt."
-    )
-
-
-def test_fallback_query_is_the_question_when_no_visitor_turn_exists() -> None:
-    assert fallback_search_query("Ma thuaj shkurt.", [turn("assistant", "Përgjigjja")]) == (
-        "Ma thuaj shkurt."
-    )
-
-
-def test_condensed_query_is_accepted_from_the_first_usable_line() -> None:
-    assert accept_condensed_query('\n  "Aeroporti i Vlorës"  \nextra line') == "Aeroporti i Vlorës"
-
-
-def test_unusable_condensation_output_is_rejected() -> None:
-    assert accept_condensed_query("") is None
-    assert accept_condensed_query("   \n  ") is None
-    assert accept_condensed_query("x" * 401) is None

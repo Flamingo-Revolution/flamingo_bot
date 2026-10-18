@@ -38,10 +38,11 @@ class EmbeddingModelConfig(BaseModel):
 class ModelConfig(BaseModel):
     chat: ChatModelConfig
     embedding: EmbeddingModelConfig
-    #: Short non-streaming call that rewrites a follow-up into a standalone
-    #: search query. It uses the same Responses contract as ``chat`` with a
-    #: cheaper effort and a tighter deadline.
+    #: Typed intent/source/date plan for every question, with an independent
+    #: model, JSON output budget and deadline.
     condense: ChatModelConfig
+    #: Independent passage-selection call; it must not inherit the planner model.
+    rerank: ChatModelConfig
 
 
 class Settings(BaseSettings):

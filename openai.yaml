@@ -1,20 +1,28 @@
 chat:
-  deployment: "gpt-5.6-luna"
+  deployment: "gpt-6.1-sol"
   api_type: "azure"
   api_version: "2025-04-01-preview"
   timeout_seconds: 60
   max_output_tokens: 1200
-  reasoning_effort: "medium"
+  reasoning_effort: "low"
   text_verbosity: "medium"
 
 condense:
+  deployment: "gpt-6-luna"
+  api_type: "azure"
+  api_version: "2025-04-01-preview"
+  timeout_seconds: 20
+  max_output_tokens: 800
+  # Bounded JSON intent/anchor plan, independent of answer generation and ranking.
+  reasoning_effort: "none"
+  text_verbosity: "low"
+
+rerank:
   deployment: "gpt-5.6-luna"
   api_type: "azure"
   api_version: "2025-04-01-preview"
   timeout_seconds: 20
   max_output_tokens: 400
-  # Measured on 2026-08-23: "none" matched "low" on rewrite quality at about half
-  # the latency, and this call only resolves references.
   reasoning_effort: "none"
   text_verbosity: "low"
 

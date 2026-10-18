@@ -30,6 +30,15 @@ from flamingo_bot.models import (
     RetrievedChunk,
     RollbackReport,
 )
+from flamingo_bot.planning import (
+    MAX_ANCHORS,
+    MAX_METADATA_MATCHES,
+    SOURCE_IDS,
+    SearchPlan,
+    cosine_distance,
+    deduplicate,
+    metadata_filters,
+)
 from flamingo_bot.quota import ALLOWED, QuotaDecision, QuotaWindow
 
 GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
@@ -225,12 +234,18 @@ class FirestoreVectorStore:
         self.current_ref = self.client.collection("rag_meta").document("current")
 
     def _active_generation_id(self) -> str | None:
-        snapshot = self.current_ref.get(timeout=10)
+        snapshot = self.current_ref.get(timeout=10, retry=None)
         if not snapshot.exists:
             return None
         value = snapshot.to_dict() or {}
         generation_id = value.get("generation_id")
         return str(generation_id) if generation_id else None
+
+    async def active_generation(self) -> str | None:
+        try:
+            return await asyncio.to_thread(self._active_generation_id)
+        except GoogleAPICallError as exc:
+            raise ProviderError("Firestore active-generation lookup failed") from exc
 
     def _status_sync(self) -> dict[str, object]:
         generation_id = self._active_generation_id()
@@ -263,8 +278,11 @@ class FirestoreVectorStore:
         limit: int,
         distance_threshold: float,
         source_id: str | None = None,
+        generation_id: str | None = None,
     ) -> list[RetrievedChunk]:
-        generation_id = self._active_generation_id()
+        generation_id = (
+            validate_generation_id(generation_id) if generation_id else self._active_generation_id()
+        )
         if generation_id is None:
             return []
         collection = (
@@ -284,7 +302,7 @@ class FirestoreVectorStore:
             distance_threshold=distance_threshold,
         )
         results: list[RetrievedChunk] = []
-        for snapshot in vector_query.get(timeout=20):
+        for snapshot in vector_query.get(timeout=20, retry=None):
             data = snapshot.to_dict() or {}
             results.append(
                 RetrievedChunk(
@@ -308,6 +326,7 @@ class FirestoreVectorStore:
         limit: int,
         distance_threshold: float,
         source_id: str | None = None,
+        generation_id: str | None = None,
     ) -> list[RetrievedChunk]:
         try:
             return await asyncio.to_thread(
@@ -316,9 +335,78 @@ class FirestoreVectorStore:
                 limit=limit,
                 distance_threshold=distance_threshold,
                 source_id=source_id,
+                generation_id=generation_id,
             )
         except GoogleAPICallError as exc:
             raise ProviderError("Firestore vector search failed") from exc
+
+    async def metadata_passages(
+        self,
+        plan: SearchPlan,
+        vectors: Sequence[Sequence[float]],
+        *,
+        generation_id: str,
+    ) -> list[RetrievedChunk]:
+        """Bounded, read-only exact lookups in the request's pinned generation."""
+        generation_id = validate_generation_id(generation_id)
+        if not vectors:
+            return []
+
+        def read() -> list[RetrievedChunk]:
+            collection = (
+                self.client.collection("rag_generations")
+                .document(generation_id)
+                .collection("chunks")
+            )
+            found: dict[str, tuple[int, RetrievedChunk]] = {}
+            deadline = time.monotonic() + 35
+            for conditions in metadata_filters(plan):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ProviderError("Firestore metadata lookup deadline exceeded")
+                query: Any = collection
+                for field, operation, value in conditions:
+                    query = query.where(filter=FieldFilter(field, operation, value))
+                for snapshot in query.limit(MAX_METADATA_MATCHES).get(
+                    timeout=min(10, remaining),
+                    retry=None,
+                ):
+                    data = snapshot.to_dict() or {}
+                    if data.get("source_id") not in SOURCE_IDS:
+                        continue
+                    if (data.get("metadata") or {}).get("section") == "index" and data.get(
+                        "chunk_index"
+                    ) != 0:
+                        continue
+                    embedding = data.get("embedding")
+                    if embedding is None:
+                        continue
+                    vector = [float(value) for value in embedding]
+                    distance = min(
+                        cosine_distance(vector, query_vector) for query_vector in vectors
+                    )
+                    item = RetrievedChunk(
+                        chunk_id=snapshot.id,
+                        source_id=str(data["source_id"]),
+                        source_label=str(data["source_label"]),
+                        title=str(data["title"]),
+                        text=str(data["text"]),
+                        canonical_url=str(data["canonical_url"]),
+                        legal_status=data.get("legal_status"),
+                        distance=distance,
+                        metadata={
+                            **dict(data.get("metadata") or {}),
+                            "retrieval_method": "metadata-anchor",
+                        },
+                    )
+                    found[snapshot.id] = (int(data.get("chunk_index", 0)), item)
+            values = sorted(found.values(), key=lambda pair: (pair[0], pair[1].distance))
+            return deduplicate([item for _, item in values])[:MAX_ANCHORS]
+
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(read), timeout=45)
+        except (GoogleAPICallError, TimeoutError, KeyError, TypeError, ValueError) as exc:
+            raise ProviderError("Firestore metadata retrieval failed") from exc
 
     def _load_active_snapshot_sync(
         self, contract: EmbeddingReuseContract

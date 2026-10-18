@@ -8,6 +8,36 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
 from flamingo_bot.models import RetrievedChunk
+from flamingo_bot.planning import (
+    MAX_ANCHORS,
+    MAX_METADATA_MATCHES,
+    PassageSelection,
+    SearchPlan,
+    cosine_distance,
+    deduplicate,
+    metadata_filters,
+)
+
+
+def _matches_metadata(
+    record: RetrievedChunk, conditions: Sequence[tuple[str, str, str | int]]
+) -> bool:
+    for field, operation, expected in conditions:
+        actual = (
+            record.metadata.get(field.removeprefix("metadata."))
+            if field.startswith("metadata.")
+            else record.model_dump().get(field, record.metadata.get(field))
+        )
+        if operation == "==":
+            if actual != expected:
+                return False
+        elif not isinstance(actual, str) or not isinstance(expected, str):
+            return False
+        elif operation == ">=" and actual < expected:
+            return False
+        elif operation == "<" and actual >= expected:
+            return False
+    return True
 
 
 class HashEmbedder:
@@ -35,6 +65,9 @@ class InMemoryVectorStore:
     ) -> None:
         self.records = [(record, list(vector)) for record, vector in records]
 
+    async def active_generation(self) -> str | None:
+        return "test" if self.records else None
+
     async def status(self) -> dict[str, object]:
         return {
             "ready": bool(self.records),
@@ -51,6 +84,7 @@ class InMemoryVectorStore:
         limit: int,
         distance_threshold: float,
         source_id: str | None = None,
+        generation_id: str | None = None,
     ) -> list[RetrievedChunk]:
         def cosine_distance(vector: Sequence[float]) -> float:
             dot = sum(left * right for left, right in zip(query_vector, vector, strict=True))
@@ -70,22 +104,51 @@ class InMemoryVectorStore:
             key=lambda record: record.distance,
         )[:limit]
 
+    async def metadata_passages(
+        self,
+        plan: SearchPlan,
+        vectors: Sequence[Sequence[float]],
+        *,
+        generation_id: str,
+    ) -> list[RetrievedChunk]:
+        found: dict[str, RetrievedChunk] = {}
+        for conditions in metadata_filters(plan):
+            matches = 0
+            for record, vector in self.records:
+                if not _matches_metadata(record, conditions):
+                    continue
+                matches += 1
+                if matches > MAX_METADATA_MATCHES:
+                    break
+                if (
+                    record.metadata.get("section") == "index"
+                    and record.metadata.get("chunk_index", 0) != 0
+                ):
+                    continue
+                found[record.chunk_id] = record.model_copy(
+                    update={
+                        "distance": min(cosine_distance(vector, item) for item in vectors),
+                        "metadata": {**record.metadata, "retrieval_method": "metadata-anchor"},
+                    }
+                )
+        return deduplicate(list(found.values()))[:MAX_ANCHORS]
 
-class ScriptedCondenser:
-    """Deterministic stand-in for the Azure query-condensation call."""
 
-    def __init__(self, rewritten: str = "", *, error: Exception | None = None) -> None:
-        self.rewritten = rewritten
+class ScriptedPlanner:
+    """Deterministic stand-in for typed Azure query planning."""
+
+    def __init__(self, plan: SearchPlan | None = None, *, error: Exception | None = None) -> None:
+        self.plan = plan or SearchPlan.fallback("Revolucioni Flamingo")
         self.error = error
         self.calls: list[dict[str, str | None]] = []
 
-    async def complete_text(
+    async def plan_search(
         self,
         *,
         instructions: str,
         prompt: str,
         safety_identifier: str | None,
-    ) -> str:
+    ) -> SearchPlan:
         self.calls.append(
             {
                 "instructions": instructions,
@@ -95,7 +158,28 @@ class ScriptedCondenser:
         )
         if self.error is not None:
             raise self.error
-        return self.rewritten
+        return self.plan
+
+
+class ScriptedRanker:
+    def __init__(self, selected_ids: Sequence[str] = (), *, error: Exception | None = None) -> None:
+        self.selected_ids = list(selected_ids)
+        self.error = error
+        self.calls: list[dict[str, str | None]] = []
+
+    async def select_passages(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> PassageSelection:
+        self.calls.append(
+            {"instructions": instructions, "prompt": prompt, "safety_identifier": safety_identifier}
+        )
+        if self.error is not None:
+            raise self.error
+        return PassageSelection(selected_ids=self.selected_ids)
 
 
 class ScriptedAnswerGenerator:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -30,7 +30,7 @@ class ConversationTurn:
 @dataclass(frozen=True)
 class EvalCase:
     id: str
-    question: str
+    question: str = ""
     history: tuple[ConversationTurn, ...] = ()
     min_citations: int = 0
     max_citations: int | None = None
@@ -40,6 +40,8 @@ class EvalCase:
     #: Cases whose correct outcome is a refusal must not be forced to cite,
     #: because retrieval can still return loosely related chunks.
     expect_citation_markers: bool = True
+    max_sentences: int | None = None
+    turns: tuple[EvalCase, ...] = ()
 
 
 @dataclass
@@ -70,32 +72,31 @@ def load_cases(path: Path) -> list[EvalCase]:
     raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or not isinstance(raw.get("cases"), list):
         raise ValueError("Evaluation file must contain a cases list")
-    cases: list[EvalCase] = []
-    for item in raw["cases"]:
+
+    def load_case(item: Any) -> EvalCase:
         if not isinstance(item, dict):
             raise ValueError("Each evaluation case must be an object")
-        cases.append(
-            EvalCase(
-                id=str(item["id"]),
-                question=str(item["question"]),
-                history=load_history(item.get("history", [])),
-                min_citations=int(item.get("min_citations", 0)),
-                max_citations=(
-                    int(item["max_citations"]) if item.get("max_citations") is not None else None
-                ),
-                expected_source_any=tuple(
-                    str(value) for value in item.get("expected_source_any", [])
-                ),
-                expected_source_all=tuple(
-                    str(value) for value in item.get("expected_source_all", [])
-                ),
-                forbidden_answer_phrases=tuple(
-                    str(value) for value in item.get("forbidden_answer_phrases", [])
-                ),
-                expect_citation_markers=bool(item.get("expect_citation_markers", True)),
-            )
+        if not item.get("question") and not item.get("turns"):
+            raise ValueError("An evaluation case needs a question or conversation turns")
+        return EvalCase(
+            id=str(item["id"]),
+            question=str(item.get("question", "")),
+            history=load_history(item.get("history", [])),
+            min_citations=int(item.get("min_citations", 0)),
+            max_citations=(
+                int(item["max_citations"]) if item.get("max_citations") is not None else None
+            ),
+            expected_source_any=tuple(str(value) for value in item.get("expected_source_any", [])),
+            expected_source_all=tuple(str(value) for value in item.get("expected_source_all", [])),
+            forbidden_answer_phrases=tuple(
+                str(value) for value in item.get("forbidden_answer_phrases", [])
+            ),
+            expect_citation_markers=bool(item.get("expect_citation_markers", True)),
+            max_sentences=item.get("max_sentences"),
+            turns=tuple(load_case(turn) for turn in item.get("turns", [])),
         )
-    return cases
+
+    return [load_case(item) for item in raw["cases"]]
 
 
 def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
@@ -117,7 +118,7 @@ def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
-def run_case(case: EvalCase, api_base: str, origin: str, timeout: float) -> EvalResult:
+def _run_turn(case: EvalCase, api_base: str, origin: str, timeout: float) -> tuple[EvalResult, str]:
     result = EvalResult(id=case.id, history_turns=len(case.history))
     request = Request(
         f"{api_base.rstrip('/')}/v1/chat",
@@ -140,7 +141,7 @@ def run_case(case: EvalCase, api_base: str, origin: str, timeout: float) -> Eval
     except (HTTPError, URLError, TimeoutError, ValueError) as exc:
         result.passed = False
         result.failures.append(type(exc).__name__)
-        return result
+        return result, ""
 
     citations = [data for event, data in events if event == "citation"]
     answer = "".join(
@@ -175,9 +176,43 @@ def run_case(case: EvalCase, api_base: str, origin: str, timeout: float) -> Eval
         result.failures.append("forbidden_phrase_present")
     if UNSUPPORTED_MARKDOWN.search(answer):
         result.failures.append("unsupported_markdown_in_answer")
+    markers = set(re.findall(r"\[S\d+\]", answer))
+    valid_markers = {"[" + str(item.get("id", "")) + "]" for item in citations}
+    if markers - valid_markers:
+        result.failures.append("unknown_citation_marker")
+    if case.max_sentences is not None:
+        plain = re.sub(r"\[S\d+\]", "", answer).strip()
+        plain = re.sub(
+            r"\b(?:nr|no)\.(?=\s*\d)|\b(?:p\.sh|e\.g|i\.e)\.", "", plain, flags=re.IGNORECASE
+        )
+        sentences = [part for part in re.split(r"[.!?]+(?:\s+|$)", plain) if part.strip()]
+        if len(sentences) > case.max_sentences:
+            result.failures.append("too_many_sentences")
 
     result.passed = not result.failures
-    return result
+    return result, answer
+
+
+def run_case(case: EvalCase, api_base: str, origin: str, timeout: float) -> EvalResult:
+    return _run_turn(case, api_base, origin, timeout)[0]
+
+
+def run_conversation(
+    case: EvalCase, api_base: str, origin: str, timeout: float
+) -> list[EvalResult]:
+    if not case.turns:
+        return [run_case(case, api_base, origin, timeout)]
+    history = list(case.history)
+    results: list[EvalResult] = []
+    for turn in case.turns:
+        while len(history) > 6 or sum(len(item.text) for item in history) > 4000:
+            history.pop(0)
+        result, answer = _run_turn(replace(turn, history=tuple(history)), api_base, origin, timeout)
+        results.append(result)
+        history.append(ConversationTurn(role="user", text=turn.question[:2000]))
+        if answer and not {"stream_error", "missing_done_event"}.intersection(result.failures):
+            history.append(ConversationTurn(role="assistant", text=answer[:2000]))
+    return results
 
 
 def valid_http_url(value: str) -> str:
@@ -192,11 +227,19 @@ def main() -> int:
     parser.add_argument("--api-base", type=valid_http_url, default="http://localhost:8000")
     parser.add_argument("--origin", type=valid_http_url, default="http://localhost:5173")
     parser.add_argument("--cases", type=Path, default=Path("evals/questions.yaml"))
-    parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument(
+        "--case", action="append", help="Run only the selected case/conversation IDs"
+    )
+    parser.add_argument("--timeout", type=float, default=150.0)
     args = parser.parse_args()
 
+    cases = [case for case in load_cases(args.cases) if not args.case or case.id in args.case]
+    if not cases:
+        parser.error("No evaluation cases selected")
     results = [
-        run_case(case, args.api_base, args.origin, args.timeout) for case in load_cases(args.cases)
+        result
+        for case in cases
+        for result in run_conversation(case, args.api_base, args.origin, args.timeout)
     ]
     payload = {
         "passed": all(result.passed for result in results),

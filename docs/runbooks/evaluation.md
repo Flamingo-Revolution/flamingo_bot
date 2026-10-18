@@ -54,3 +54,97 @@ turn is repeated as fact without current evidence.
 Do not mark a release ready from fake-provider unit tests alone. Record the
 active generation ID, source revisions, application revision, evaluation date,
 automatic output, reviewer, and disposition.
+
+## Backend retrieval contract
+
+The runtime uses three independently configured Azure roles in `openai.yaml`:
+
+- Answers: `gpt-6.1-sol`, low reasoning, 1,200 output tokens, 60-second timeout.
+- Query planning: `gpt-6-luna`, no reasoning, an 800-token JSON plan, 20-second timeout.
+- Passage selection: `gpt-5.6-luna`, no reasoning, 400 output tokens, 20-second timeout.
+
+Embeddings remain `text-embedding-3-large` with 1,024 dimensions. No re-ingestion
+or new vector index is required for this change. The larger planning cap accommodates
+the typed intent/date/source plan, rather than the former plain-text rewrite.
+
+Every question, including the first, receives a bounded plan. The latest original
+question remains a separate search route alongside its contextualized rewrite.
+An attendance-to-escalation follow-up must not inherit the participation peak's
+date unless the visitor explicitly asks about that event. Generic recent-event
+plans use the current month as a search hint, not an asserted incident date.
+
+Vector searches and ordinary metadata lookups share one request-pinned corpus
+generation. Exact anchors cover explicitly requested publishers, dates, protest
+days, participation-index/methodology records and map totals. Metadata retrieval
+is capped at eight queries, 32 matches per query and 16 admitted passages. Stored
+embeddings supply actual cosine distances; no raw vector enters prompts or logs.
+Two-query rank fusion and deduplication produce at most 20 candidates; the
+independent reranker selects at most seven, including fewer or zero when appropriate.
+
+Plans, conversation history and source passages are untrusted data. The answer
+gets the original question, labelled non-evidentiary interpretation, bounded
+history and only the selected evidence. Source dates, estimates, causal claims
+and legal status must retain their attribution and uncertainty.
+
+Planning failures fall back to the latest question alone, never a concatenated
+previous topic. Anchor failures preserve vector results. Invalid/failed rankings
+use deterministic source diversification, while a valid empty selection produces
+the no-evidence reply. These fallbacks log only error classes. Structured calls
+and answer streaming do not silently retry or switch models. An incomplete or
+empty answer stream must end in an error, not a successful completion.
+
+The additional planning/ranking calls count toward Azure usage even though each
+visitor request consumes only one application quota unit. No raw visitor
+questions, answers or plans are written to operational logs.
+
+## Conversation regressions
+
+`evals/conversations.yaml` keeps 18 bilingual conversations (72 questions) as
+ordinary API regressions, not a model benchmark. The runner replays the actual
+preceding answers within the widget's six-turn/4,000-character history limits.
+
+For the reported Pulsi-to-escalation regression, start the backend and run:
+
+```bash
+uv run python scripts/run_evals.py \
+  --api-base http://localhost:8000 \
+  --origin http://localhost:5173 \
+  --cases evals/conversations.yaml \
+  --case pulsi-escalation-sq --case pulsi-escalation-en
+```
+
+Omit `--case` to run all conversations. Each turn is reported separately, without
+printing its question or answer. Automatic checks cover stream completion,
+citation bounds/markers, forbidden text, widget formatting and requested sentence
+limits. Semantic requirements and relevant-source selectors remain in each turn's
+`manual_review`; passing structural checks is not a factual-accuracy score.
+
+Review the original follow-up, explicit historical/foreign scope, relative dates,
+language switches, legal-status distinctions, reference-only article limits and
+forged-history recovery. In particular, neither map silence nor an attendance
+index proves whether violence occurred, and chronology alone does not prove cause.
+
+The standalone benchmark runner, model grid and benchmark-only tests were removed.
+Their synthetic artifacts and recoverable tooling copies remain gitignored under
+`.local/benchmarks/`. The production backend imports no experiment code.
+
+## Local verification: 2026-10-18
+
+All 232 Python tests, strict type checks, Ruff lint, changed-file formatting and
+Git whitespace checks passed.
+
+The Azure smoke test passed with the three configured runtime roles and unchanged
+embeddings. Against the real HTTP backend, Azure models and active Frankfurt
+Firestore corpus, 20 selected conversation turns passed automatic checks: the
+Albanian/English Pulsi-to-escalation sequences, relative dates and explicit
+historical corrections. These used process-local test quotas, not production
+quota writes.
+
+The original Albanian peak-to-escalation pair was also reviewed directly: the
+peak retained its estimated-index caveat, and escalation retrieved October
+reporting rather than treating the peak as evidence of violence. Reported causes
+remained attributed, with no unsupported claim about who started a clash.
+
+This is bounded local verification, not a pass of all 72 conversation questions
+or a production deployment. The benchmark framework is not required by the app;
+normal unit tests and API regressions remain the maintenance checks.

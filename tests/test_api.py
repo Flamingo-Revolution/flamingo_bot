@@ -9,12 +9,13 @@ from flamingo_bot.api import ServiceBundle, create_app
 from flamingo_bot.config import Settings
 from flamingo_bot.errors import ProviderError
 from flamingo_bot.models import RetrievedChunk
+from flamingo_bot.planning import SearchPlan
 from flamingo_bot.ports import RequestQuota
 from flamingo_bot.providers.memory import (
     HashEmbedder,
     InMemoryVectorStore,
     ScriptedAnswerGenerator,
-    ScriptedCondenser,
+    ScriptedPlanner,
 )
 from flamingo_bot.quota import QuotaDecision
 
@@ -23,7 +24,7 @@ async def build_app(
     *,
     rate_limit: int = 20,
     widget_dir: str | None = None,
-    condenser: ScriptedCondenser | None = None,
+    planner: ScriptedPlanner | None = None,
     environment: Literal["development", "test", "production"] = "development",
     client_quota: int = 10,
     daily_quota: int = 100,
@@ -61,7 +62,7 @@ async def build_app(
             embedder=embedder,
             vector_store=store,
             answer_generator=generator,
-            query_condenser=condenser,
+            query_planner=planner,
             request_quota=request_quota,
         ),
     )
@@ -225,8 +226,8 @@ async def test_question_size_is_validated() -> None:
 
 @pytest.mark.asyncio
 async def test_replayed_history_is_condensed_and_reaches_the_grounded_prompt() -> None:
-    condenser = ScriptedCondenser("What is Flamingo Revolution?")
-    app, generator = await build_app(condenser=condenser)
+    planner = ScriptedPlanner(SearchPlan.fallback("What is Flamingo Revolution?"))
+    app, generator = await build_app(planner=planner)
     async with app.router.lifespan_context(app):
         transport = httpx2.ASGITransport(app=app)
         async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -244,7 +245,7 @@ async def test_replayed_history_is_condensed_and_reaches_the_grounded_prompt() -
 
     assert response.status_code == 200
     assert "event: citation" in response.text
-    assert len(condenser.calls) == 1
+    assert len(planner.calls) == 1
     prompt = str(generator.calls[0]["prompt"])
     assert "Visitor: What is Flamingo Revolution?" in prompt
     assert "Assistant: An independent civic movement ." in prompt
